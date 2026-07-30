@@ -1,0 +1,19 @@
+# 🚀 CodeAssist 3.8.2
+
+**COMPOSE PREVIEW**
+- Previews now render your project's **own Material3** instead of a bundled copy, so components built on newer Material3 APIs — including **Material3 Expressive** (e.g. `Button(shapes = …)` / `ButtonDefaults.shapes()`) — show up in the preview instead of silently failing.
+- Reopening a preview is near-instant: the interpreter caches its generated peers to disk, so after the first render every reopen (and the first open after an app restart) is fast.
+- More reliable Kotlin previews — mangled JVM names now resolve from `@Metadata` the same way the compiler names them.
+
+**KOTLIN EDITOR**
+- Opt-in diagnostics: using a `@RequiresOptIn` / experimental API without the matching `@OptIn` is now flagged, along with references to `internal`/invisible declarations.
+- Fixed a false "unresolved import" for private top-level functions.
+
+**KSP (on-device annotation processing)**
+- Per-module toggles for the Room / Moshi / Hilt / Glide processors.
+- Fixed on-device dexing of the bundled processors.
+
+**STABILITY**
+- Editor parsing is now serialized under a single parse lock, fixing crashes seen on some 32-bit devices.
+
+Full changelog: https://github.com/tyron12233/CodeAssist/releases/tag/v3.8.2

@@ -1,0 +1,12 @@
+# 🚀 CodeAssist 3.8.1
+
+**ANNOTATION PROCESSING (KSP)**
+- **On-device KSP (Kotlin Symbol Processing).** Annotation processors now run at build time, directly on your device, on CodeAssist's own bundled Kotlin compiler. No desktop, no Gradle.
+- **Bundled processors: Room, Moshi, Hilt/Dagger, and Glide.** Add a library's runtime dependency in the **Dependencies** screen and its processor turns on automatically, generating code exactly as it does on desktop:
+  - **Room** generates your `@Database`/`@Dao` implementations,
+  - **Moshi** generates `@JsonClass` adapters,
+  - **Hilt/Dagger** generates dependency-injection components,
+  - **Glide** generates its module/request API.
+- **Generated code is first-class.** The output is compiled and indexed like hand-written source, so completion, go-to-definition, and diagnostics all see it.
+
+Full changelog: https://github.com/tyron12233/CodeAssist/releases/tag/v3.8.1

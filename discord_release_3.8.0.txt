@@ -1,0 +1,34 @@
+# 🚀 CodeAssist 3.8.0
+
+**NAVIGATE INTO LIBRARIES**
+- **Go to a library class** now opens it instead of going nowhere. Use Go to Declaration on any type or symbol from a dependency or the SDK, and CodeAssist shows its **attached source** when available, otherwise a **decompiled** view: Java classes decompile in full, Kotlin classes show a declaration stub, and Kotlin built-ins (`List`, `Int`, `String`) and top-level functions (`listOf`) are reconstructed too.
+- The class opens in a **read-only** tab, with a **"Decompile to Java"** action in the banner to see the full Java for any class (including Kotlin ones).
+
+**CODE NAVIGATION**
+- New **Go to Declaration**, **Implementation(s)**, **Type Declaration**, and **Super** for Kotlin, from the long-press menu or the keyboard. Only the actions that apply at the caret are shown.
+- Quick-fixes and intentions are now unified into **one context menu** (the separate lightbulb button is gone).
+
+**EDITOR**
+- The text-selection toolbar now **follows your selection** to where it finishes, and has been redesigned with animation.
+
+**STORAGE**
+- New **Storage** screen with a usage graph of what is taking space, plus granular controls to clear caches, downloaded SDKs, and projects.
+
+**DEPENDENCIES**
+- The dependency dialog now shows **which versions you have downloaded and cached**, with a delete button beside each so you can remove old ones. It is also scrollable on small screens.
+
+**COMPOSE PREVIEW**
+- Added a **view-lock toggle** and a **collapsible toolbar**.
+- Fixed cross-file preview lowering when a helper lives in the focal file, and previews now wait until indexing is ready before rendering.
+
+**KOTLIN**
+- `private` members now appear in member completion **inside their own class**.
+- Enum fixes: enum constants are no longer indexed as types, and entries resolve correctly within the enum body.
+
+**ANDROID**
+- Module Settings **`versionCode` / `versionName` now override** a value declared in the manifest, so the compiled APK reflects what you set.
+
+**PLUGINS**
+- The **block editor** is now a disablable built-in plugin.
+
+Full changelog: https://github.com/tyron12233/CodeAssist/releases/tag/v3.8.0
