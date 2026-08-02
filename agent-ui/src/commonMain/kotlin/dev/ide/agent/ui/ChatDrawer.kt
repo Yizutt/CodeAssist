@@ -214,29 +214,28 @@ private fun ChatHeader(
             fill = Ca.colors.accentSoft,
             textColor = Ca.colors.accent,
         )
-        // Tool iterations: tap to pick a value directly.
-        var showIterMenu by remember { mutableStateOf(false) }
+        // Tool iterations: cycle OFF → 10 → 24 → ∞ (same pattern as permission mode).
         val maxIter = backend.agent.maxIterations()
         val iterLabel = when {
             maxIter == 0 -> "Tools OFF"
             maxIter < 0 -> "∞ tools"
             else -> "$maxIter tools"
         }
-        Box {
-            Chip(
-                text = iterLabel,
-                modifier = Modifier.clip(RoundedCornerShape(Ca.radius.pill)).clickable { showIterMenu = true },
-                fill = Ca.colors.accentSoft,
-                textColor = Ca.colors.accent,
-            )
-            CaDropdownMenu(expanded = showIterMenu, onDismissRequest = { showIterMenu = false }) {
-                iterOption("Tools OFF", 0, maxIter, backend) { showIterMenu = false }
-                iterOption("5 rounds", 5, maxIter, backend) { showIterMenu = false }
-                iterOption("10 rounds", 10, maxIter, backend) { showIterMenu = false }
-                iterOption("24 rounds", 24, maxIter, backend) { showIterMenu = false }
-                iterOption("Unlimited", -1, maxIter, backend) { showIterMenu = false }
-            }
-        }
+        Chip(
+            text = iterLabel,
+            modifier = Modifier.clip(RoundedCornerShape(Ca.radius.pill)).clickable {
+                // Cycle: OFF → 10 → 24 → ∞ → OFF ...
+                val next = when {
+                    maxIter == 0 -> 10     // OFF → 10
+                    maxIter < 0 -> 0       // ∞ → OFF
+                    maxIter >= 24 -> -1    // 24+ → ∞
+                    else -> maxIter + 10   // 1..24 → +10 (10→20→30→...)
+                }
+                backend.agent.setMaxIterations(next)
+            },
+            fill = Ca.colors.accentSoft,
+            textColor = Ca.colors.accent,
+        )
         // Language selector.
         var showLang by remember { mutableStateOf(false) }
         // Bump this to force recomposition after a language change.
@@ -685,23 +684,6 @@ private fun SparkleBadge(size: Int, animated: Boolean = false) {
     ) {
         Icon(CaIcons.sparkle, null, Modifier.size((size * 0.6f).dp).scale(scale), tint = Ca.colors.textOnAccent)
     }
-}
-
-@Composable
-private fun iterOption(label: String, value: Int, current: Int, backend: IdeBackend, onSelect: () -> Unit) {
-    DropdownMenuItem(
-        text = {
-            Text(
-                label,
-                color = if (value == current) Ca.colors.accent else Ca.colors.textPrimary,
-                fontWeight = if (value == current) FontWeight.SemiBold else FontWeight.Normal,
-            )
-        },
-        onClick = {
-            backend.agent.setMaxIterations(value)
-            onSelect()
-        },
-    )
 }
 
 @Composable

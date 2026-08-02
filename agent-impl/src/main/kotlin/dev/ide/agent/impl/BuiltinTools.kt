@@ -190,12 +190,15 @@ fun builtinTools(ws: AgentWorkspace): List<AgentTool> = listOf(
 
     tool(
         name = "run_program",
-        description = "Compile a module and run its main() on the in-process VM, returning the program output, " +
-            "exit code, and any compile errors. Optionally pipe text to standard input (consumed line by line, " +
-            "then EOF). Use this to verify that a change actually builds and behaves correctly. The run is " +
-            "sandboxed and time-limited.",
+        description = "Compile a module and run its main() method on the in-process VM. Returns stdout output, " +
+            "exit code, and any compilation errors. The run is sandboxed and time-limited (60s).\n" +
+            "IMPORTANT: Before calling this, use project_overview to find which modules exist, then pass the " +
+            "exact module name that contains a main() method. If no module is specified, the first module " +
+            "is used — but it may not have a main() method, in which case the error will say so. When that " +
+            "happens, re-run with the correct module name from project_overview. Prefer module names like " +
+            "\"app\" or \"main\" which typically hold the entry point.",
         parameters = toolSchema {
-            string("module", "Module to run. Defaults to the project's main module.", required = false)
+            string("module", "Exact module name from project_overview. Required unless the project has only one module.", required = false)
             string("stdin", "Text piped to the program's standard input.", required = false)
         },
         // Executes code with real side effects, so it is permission-gated like the other impactful tools.
@@ -254,7 +257,10 @@ fun builtinTools(ws: AgentWorkspace): List<AgentTool> = listOf(
 private fun formatRun(r: RunResult): ToolExecutionResult {
     if (!r.compiled) {
         val detail = if (r.diagnostics.isEmpty()) "" else "\n" + r.diagnostics.joinToString("\n")
-        return ToolExecutionResult.error("Compilation failed; the program did not start.$detail")
+        val hint = if (r.diagnostics.isEmpty() || r.diagnostics.any { it.contains("main", ignoreCase = true) })
+            "\nHint: use project_overview to find the module with a main() method, then pass its exact name."
+        else ""
+        return ToolExecutionResult.error("Compilation failed; the program did not start.$detail$hint")
     }
     val sb = StringBuilder()
     sb.append(

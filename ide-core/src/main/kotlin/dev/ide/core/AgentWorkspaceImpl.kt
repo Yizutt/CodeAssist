@@ -171,12 +171,21 @@ internal class IdeAgentWorkspace(private val ctx: BackendContext) : AgentWorkspa
 
     override suspend fun runProgram(module: String?, stdin: String): RunResult {
         val e = engine()
-        // Default to the sole/first module; runAndCapture reports a clear error if it has no runnable main,
-        // which tells the model to pick another module.
-        val moduleName = module?.takeIf { it.isNotBlank() }
-            ?: e.modules().firstOrNull()?.name
-            ?: throw IllegalStateException("No modules in the project to run.")
+        val modules = e.modules()
+        if (modules.isEmpty()) {
+            return RunResult(false, false, "", null, listOf("No modules in the project to run. Use project_overview to see what's available."))
+        }
+        val moduleName = module?.takeIf { it.isNotBlank() } ?: modules.first().name
+        // If the chosen module likely has no main, hint the model toward modules that do.
         val capture = e.runAndCapture(moduleName, stdin, timeoutMs = RUN_TIMEOUT_MS)
+        if (!capture.compiled && capture.diagnostics.any { it.contains("main", ignoreCase = true) }) {
+            val otherModules = modules.filter { it.name != moduleName }.joinToString(", ") { it.name }
+            val hint = if (otherModules.isNotBlank()) " Try one of: $otherModules." else ""
+            return RunResult(
+                capture.compiled, capture.ran, capture.stdout, capture.exitCode,
+                capture.diagnostics + "No main() in '$moduleName'.$hint"
+            )
+        }
         return RunResult(
             compiled = capture.compiled,
             finished = capture.ran,
