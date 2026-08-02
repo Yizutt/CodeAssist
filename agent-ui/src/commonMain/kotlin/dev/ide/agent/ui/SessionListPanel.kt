@@ -66,7 +66,7 @@ fun SessionListPanel(
                 tint = Ca.colors.textSecondary,
             )
         }
-        Hairline()
+        Box(Modifier.fillMaxWidth().height(1.dp).background(Ca.colors.surface2))
 
         if (sessions.isEmpty()) {
             Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
