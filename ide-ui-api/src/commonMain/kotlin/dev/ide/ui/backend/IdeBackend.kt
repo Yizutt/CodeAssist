@@ -679,6 +679,10 @@ data class UiAgentMessage(
 data class UiAgentChatState(
     val messages: List<UiAgentMessage> = emptyList(),
     val busy: Boolean = false,
+    /** The id of the session backing the current transcript, or null for a brand-new (unsaved) conversation. */
+    val sessionId: String? = null,
+    /** The human-readable title of the current session, if loaded from history. */
+    val sessionTitle: String? = null,
 )
 
 data class UiAgentModel(val id: String, val displayName: String)

@@ -101,4 +101,7 @@ internal interface BackendContext {
     /** Record an editor-latency sample (completion/analysis) into the aggregated perf sampler (flushed by the
      *  aggregator on close). */
     fun recordPerf(event: String, ms: Long)
+
+    /** A host-writable directory for persisted agent sessions (JSON). Created on first use by [SessionStore]. */
+    fun sessionDir(): File
 }

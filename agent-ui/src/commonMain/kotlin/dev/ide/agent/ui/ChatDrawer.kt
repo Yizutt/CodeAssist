@@ -109,6 +109,7 @@ fun ChatDrawer(backend: IdeBackend, onClose: (() -> Unit)? = null, modifier: Mod
     var cfg by remember { mutableStateOf(backend.agent.config()) }
     var input by remember { mutableStateOf("") }
     var showProviders by remember { mutableStateOf(false) }
+    var showHistory by remember { mutableStateOf(false) }
 
     // Fetch the provider's live model list when the drawer opens or the provider changes.
     LaunchedEffect(cfg.selectedProvider) { backend.agent.refreshModels() }
@@ -125,6 +126,7 @@ fun ChatDrawer(backend: IdeBackend, onClose: (() -> Unit)? = null, modifier: Mod
                     cfg = backend.agent.config()
                 },
                 onNew = { backend.agent.newSession() },
+                onShowHistory = { showHistory = true },
                 onClose = onClose,
             )
             Hairline()
@@ -150,6 +152,14 @@ fun ChatDrawer(backend: IdeBackend, onClose: (() -> Unit)? = null, modifier: Mod
                 onStop = { backend.agent.stop() },
             )
         }
+        if (showHistory) {
+            Box(
+                Modifier.fillMaxSize().background(Ca.colors.scrim),
+                contentAlignment = Alignment.CenterEnd,
+            ) {
+                SessionListPanel(backend = backend, onClose = { showHistory = false })
+            }
+        }
         if (showProviders) {
             AgentProvidersSheet(backend) {
                 showProviders = false
@@ -167,6 +177,7 @@ private fun ChatHeader(
     onManage: () -> Unit,
     onCycleMode: () -> Unit,
     onNew: () -> Unit,
+    onShowHistory: () -> Unit,
     onClose: (() -> Unit)?,
 ) {
     Row(
@@ -190,6 +201,7 @@ private fun ChatHeader(
             fill = Ca.colors.accentSoft,
             textColor = Ca.colors.accent,
         )
+        IconButtonCa(CaIcons.clock, "History", onShowHistory, iconSize = 16, boxSize = 30)
         IconButtonCa(CaIcons.key, stringResource(Res.string.chat_manage_keys), onManage, iconSize = 16, boxSize = 30)
         IconButtonCa(CaIcons.refresh, stringResource(Res.string.chat_new), onNew, iconSize = 16, boxSize = 30)
         if (onClose != null) {

@@ -526,6 +526,14 @@ class IdeServicesBackend(
 
     override fun timeLabel(): String = runCatching { java.time.LocalTime.now().withNano(0).toString() }.getOrDefault("")
 
+    /** Persisted agent sessions live under `<storageRoot>/agent-sessions/`. Falls back to a temp dir on the
+     *  manager-less (test) path so [SessionStore] never NPEs. */
+    override fun sessionDir(): File {
+        val root = manager?.storageRoot?.toFile()
+        val base = root ?: File(System.getProperty("java.io.tmpdir"), "codeassist")
+        return File(base, "agent-sessions")
+    }
+
     /** Close the active engine — the host calls this on teardown (window close / activity destroy). */
     fun close() {
         runCatching { Log.removeSink(errorDialogSink) }

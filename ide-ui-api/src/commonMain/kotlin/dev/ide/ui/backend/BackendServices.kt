@@ -1,5 +1,6 @@
 package dev.ide.ui.backend
 
+import dev.ide.agent.AgentSessionMeta
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -1006,6 +1007,24 @@ interface AgentService {
 
     /** Answer a pending [permissionRequest]. */
     fun answerPermission(id: Int, decision: UiAgentPermissionDecision)
+
+    // --- session history -----------------------------------------------------------------------
+
+    /** Metadata for every persisted session, newest-first. Observed by the history panel. */
+    val sessions: StateFlow<List<AgentSessionMeta>>
+        get() = kotlinx.coroutines.flow.MutableStateFlow(emptyList())
+
+    /** Load a persisted session (by id) into the active chat, replacing the current transcript. */
+    fun loadSession(id: String) {}
+
+    /** Delete the persisted session [id] and refresh [sessions]. */
+    fun deleteSession(id: String) {}
+
+    /** Rename the persisted session [id]. */
+    fun renameSession(id: String, title: String) {}
+
+    /** The id of the session currently loaded in [chatState], or null for a brand-new conversation. */
+    fun currentSessionId(): String? = null
 
     /** A no-op agent for backends that wire none. */
     object Unsupported : AgentService {

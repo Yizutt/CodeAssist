@@ -11,6 +11,7 @@ import dev.ide.agent.impl.AgentLoop
 import dev.ide.agent.impl.AgentProviders
 import dev.ide.agent.impl.AntigravityOAuth
 import dev.ide.agent.impl.OkHttpLlmTransport
+import dev.ide.agent.impl.SessionStore
 import dev.ide.agent.impl.SystemPrompt
 import dev.ide.agent.impl.builtinTools
 import dev.ide.ui.backend.AgentService
@@ -68,6 +69,72 @@ internal class AgentBackend(private val ctx: BackendContext) : AgentService {
     private val _antigravitySignIn = MutableStateFlow(UiAntigravitySignIn())
     override val antigravitySignIn: StateFlow<UiAntigravitySignIn> = _antigravitySignIn.asStateFlow()
 
+    // --- session history ---
+
+    private val sessionStore = SessionStore(ctx.sessionDir())
+    private val _sessions = MutableStateFlow<List<dev.ide.agent.AgentSessionMeta>>(emptyList())
+    override val sessions: StateFlow<List<dev.ide.agent.AgentSessionMeta>> = _sessions.asStateFlow()
+    private var currentSessionId: String? = null
+
+    private fun refreshSessions() {
+        _sessions.value = sessionStore.list()
+    }
+
+    override fun loadSession(id: String) {
+        val session = sessionStore.load(id) ?: return
+        job?.cancel()
+        val cfg = resolveConfig()
+        val provider = registry.provider(cfg.clientProviderId) ?: return
+        val maxIterations = prefInt("maxIterations") ?: DEFAULT_MAX_ITERATIONS
+        val maxTokens = prefInt("maxTokens") ?: DEFAULT_MAX_TOKENS
+        val thinkingBudget = prefInt("thinkingBudget")
+        val client = provider.client(ProviderConfig(cfg.apiKey, cfg.baseUrl))
+        loop = AgentLoop.fromHistory(
+            session, client, tools, gate, ::systemPrompt,
+            store = sessionStore,
+            maxTokens = maxTokens,
+            maxIterations = maxIterations,
+            thinkingBudget = thinkingBudget,
+        )
+        currentSessionId = id
+        sessionAllowAll = false
+        _permissionRequest.value = null
+        // Replay the persisted messages into the chat UI.
+        val replayed = session.messages.mapNotNull { msg ->
+            when (msg.role) {
+                dev.ide.agent.LlmRole.USER ->
+                    UiAgentMessage(msgIds.incrementAndGet(), UiAgentRole.USER,
+                        text = msg.content.filterIsInstance<dev.ide.agent.ContentPart.Text>().joinToString("") { it.text })
+                dev.ide.agent.LlmRole.ASSISTANT ->
+                    UiAgentMessage(msgIds.incrementAndGet(), UiAgentRole.ASSISTANT,
+                        text = msg.content.filterIsInstance<dev.ide.agent.ContentPart.Text>().joinToString("") { it.text })
+                else -> null
+            }
+        }
+        _chatState.value = UiAgentChatState(
+            messages = replayed,
+            sessionId = id,
+            sessionTitle = session.title,
+        )
+        refreshSessions()
+    }
+
+    override fun deleteSession(id: String) {
+        sessionStore.delete(id)
+        if (currentSessionId == id) newSession()
+        else refreshSessions()
+    }
+
+    override fun renameSession(id: String, title: String) {
+        sessionStore.rename(id, title)
+        if (currentSessionId == id) {
+            _chatState.update { it.copy(sessionTitle = title) }
+        }
+        refreshSessions()
+    }
+
+    override fun currentSessionId(): String? = currentSessionId
+
     private var signInJob: Job? = null
 
     private val permIds = AtomicInteger(0)
@@ -82,6 +149,10 @@ internal class AgentBackend(private val ctx: BackendContext) : AgentService {
     private var job: Job? = null
     private var loop: AgentLoop? = null
     private var loopSignature: String? = null
+
+    init {
+        refreshSessions()
+    }
 
     // --- configuration (read from the AI settings page's prefs) ---
 
@@ -281,7 +352,8 @@ internal class AgentBackend(private val ctx: BackendContext) : AgentService {
         loopSignature = null
         sessionAllowAll = false
         _permissionRequest.value = null
-        _chatState.value = UiAgentChatState()
+        currentSessionId = SessionStore.newId()
+        _chatState.value = UiAgentChatState(sessionId = currentSessionId)
     }
 
     override fun stop() {
@@ -307,8 +379,10 @@ internal class AgentBackend(private val ctx: BackendContext) : AgentService {
         val maxIterations = prefInt("maxIterations") ?: DEFAULT_MAX_ITERATIONS
         val maxTokens = prefInt("maxTokens") ?: DEFAULT_MAX_TOKENS
         val thinkingBudget = prefInt("thinkingBudget")
+        // Include the session id in the signature so switching sessions rebuilds the loop.
+        val sessionId = currentSessionId ?: SessionStore.newId().also { currentSessionId = it }
         val signature =
-            "${cfg.selectedId}|$model|${cfg.baseUrl}|${cfg.apiKey.hashCode()}|$maxIterations|$maxTokens|$thinkingBudget"
+            "${cfg.selectedId}|$model|${cfg.baseUrl}|${cfg.apiKey.hashCode()}|$maxIterations|$maxTokens|$thinkingBudget|$sessionId"
         if (loop == null || loopSignature != signature) {
             val client = provider.client(ProviderConfig(cfg.apiKey, cfg.baseUrl))
             loop = AgentLoop(
@@ -316,6 +390,9 @@ internal class AgentBackend(private val ctx: BackendContext) : AgentService {
                 maxTokens = maxTokens,
                 maxIterations = maxIterations,
                 thinkingBudget = thinkingBudget,
+                store = sessionStore,
+                sessionId = sessionId,
+                providerId = cfg.selectedId,
             )
             loopSignature = signature
         }
@@ -329,6 +406,7 @@ internal class AgentBackend(private val ctx: BackendContext) : AgentService {
                     UiAgentMessage(userId, UiAgentRole.USER, text) +
                     UiAgentMessage(assistantId, UiAgentRole.ASSISTANT, streaming = true),
                 busy = true,
+                sessionId = currentSessionId,
             )
         }
 

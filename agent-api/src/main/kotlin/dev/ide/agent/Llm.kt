@@ -1,6 +1,7 @@
 package dev.ide.agent
 
 import kotlinx.coroutines.flow.Flow
+import kotlinx.serialization.Serializable
 
 /**
  * The provider-neutral LLM client model. A [LlmProvider] (Anthropic, OpenAI, Gemini, or a plugin-supplied
@@ -10,26 +11,33 @@ import kotlinx.coroutines.flow.Flow
  */
 
 /** The author of a message in the conversation. Tool results carry [LlmRole.TOOL]. */
+@Serializable
 enum class LlmRole { SYSTEM, USER, ASSISTANT, TOOL }
 
 /** A piece of message content. A single message may interleave several parts. */
+@Serializable
 sealed interface ContentPart {
     /** Plain assistant or user text. */
+    @Serializable
     data class Text(val text: String) : ContentPart
 
     /** Model reasoning, when the provider returns it (adaptive thinking). [signature] is opaque and, when
      *  present, must be echoed back unchanged on the same provider in later turns. */
+    @Serializable
     data class Thinking(val text: String, val signature: String? = null) : ContentPart
 
     /** A model request to call a tool. [arguments] is the raw JSON argument object as a string. [signature]
      *  is a provider-opaque token echoed back on the tool_use when continuing (Gemini's thought signature). */
+    @Serializable
     data class ToolUse(val id: String, val name: String, val arguments: String, val signature: String? = null) : ContentPart
 
     /** The result of a tool call, referenced back to its [ToolUse.id]. */
+    @Serializable
     data class ToolResultPart(val toolCallId: String, val content: String, val isError: Boolean = false) : ContentPart
 }
 
 /** One turn of the conversation. */
+@Serializable
 data class LlmMessage(val role: LlmRole, val content: List<ContentPart>) {
     companion object {
         fun user(text: String): LlmMessage = LlmMessage(LlmRole.USER, listOf(ContentPart.Text(text)))
@@ -40,12 +48,14 @@ data class LlmMessage(val role: LlmRole, val content: List<ContentPart>) {
 }
 
 /** Token accounting reported by the provider. */
+@Serializable
 data class TokenUsage(val inputTokens: Int = 0, val outputTokens: Int = 0) {
     operator fun plus(other: TokenUsage): TokenUsage =
         TokenUsage(inputTokens + other.inputTokens, outputTokens + other.outputTokens)
 }
 
 /** Why the model stopped generating a turn. */
+@Serializable
 enum class StopReason { END_TURN, TOOL_USE, MAX_TOKENS, STOP_SEQUENCE, REFUSAL, ERROR }
 
 /** A single request to the model. The loop sets [tools] and [thinking]; the UI picks [model]. */

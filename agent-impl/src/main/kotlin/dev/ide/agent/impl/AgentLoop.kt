@@ -3,6 +3,7 @@ package dev.ide.agent.impl
 import dev.ide.agent.AgentEvent
 import dev.ide.agent.AgentEventSink
 import dev.ide.agent.AgentPermissionGate
+import dev.ide.agent.AgentSession
 import dev.ide.agent.AgentToolRegistry
 import dev.ide.agent.ContentPart
 import dev.ide.agent.LlmClient
@@ -26,6 +27,9 @@ import kotlinx.coroutines.launch
  * The loop runs in the caller's coroutine, so cancelling that coroutine stops generation and tool work.
  * [systemPrompt] is a supplier so the host can refresh live project context each turn while keeping the
  * grounding prefix stable.
+ *
+ * When [store] and [sessionId] are supplied, the loop auto-saves the conversation after every completed
+ * turn so it survives process death and can be resumed via [fromHistory].
  */
 class AgentLoop(
     private val client: LlmClient,
@@ -39,6 +43,10 @@ class AgentLoop(
     private val thinkingBudget: Int? = null,
     /** Trims re-sent tool output so a long task does not re-bill the whole transcript each step. */
     private val compactor: HistoryCompactor = HistoryCompactor(),
+    /** When set with [sessionId], auto-saves the conversation after each completed turn. */
+    private val store: SessionStore? = null,
+    private val sessionId: String? = null,
+    private val providerId: String = "",
 ) {
     private val history = mutableListOf<LlmMessage>()
 
@@ -84,13 +92,43 @@ class AgentLoop(
             val calls = turn.toolCalls()
             if (calls.isEmpty()) {
                 sink.emit(AgentEvent.TurnCompleted(turn.stopReason, turn.usage))
+                persist()
                 return
             }
 
             history += executeCalls(calls, sink)
+            persist()
         }
         sink.emit(AgentEvent.Error("Stopped after $maxIterations tool iterations without finishing."))
     }
+
+    /** Write the current conversation to the store (if wired). No-op when [store] is null. */
+    private fun persist() {
+        val store = store ?: return
+        val id = sessionId ?: return
+        if (history.isEmpty()) return
+        runCatching {
+            store.save(
+                AgentSession(
+                    id = id,
+                    title = title(),
+                    createdAt = createdAt(),
+                    updatedAt = System.currentTimeMillis(),
+                    provider = providerId,
+                    model = model,
+                    messages = history.toList(),
+                )
+            )
+        }
+    }
+
+    /** First user message, used as the auto-generated title for a new session. */
+    private fun title(): String = history.firstOrNull { it.role == LlmRole.USER }
+        ?.content?.filterIsInstance<ContentPart.Text>()?.firstOrNull()?.text?.take(60)
+        ?: "New conversation"
+
+    /** Timestamp for createdAt if the session is brand new (no persisted record yet). */
+    private fun createdAt(): Long = System.currentTimeMillis()()
 
     /**
      * Runs the turn's tool calls, preserving their order in the returned results. Read-only calls run
@@ -188,6 +226,39 @@ class AgentLoop(
             if (text.isNotEmpty()) parts += ContentPart.Text(text.toString())
             parts += toolCalls()
             return parts
+        }
+    }
+
+    companion object {
+        /** Rehydrate a loop from a persisted session so the conversation can continue exactly where it left off. */
+        fun fromHistory(
+            session: AgentSession,
+            client: LlmClient,
+            tools: AgentToolRegistry,
+            gate: AgentPermissionGate,
+            systemPrompt: () -> String,
+            store: SessionStore? = null,
+            maxTokens: Int = 8192,
+            maxIterations: Int = 24,
+            thinkingBudget: Int? = null,
+            compactor: HistoryCompactor = HistoryCompactor(),
+        ): AgentLoop {
+            val loop = AgentLoop(
+                client = client,
+                model = session.model,
+                tools = tools,
+                gate = gate,
+                systemPrompt = systemPrompt,
+                maxTokens = maxTokens,
+                maxIterations = maxIterations,
+                thinkingBudget = thinkingBudget,
+                compactor = compactor,
+                store = store,
+                sessionId = session.id,
+                providerId = session.provider,
+            )
+            loop.history.addAll(session.messages)
+            return loop
         }
     }
 }
