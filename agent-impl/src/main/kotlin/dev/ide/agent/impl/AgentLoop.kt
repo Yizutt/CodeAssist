@@ -73,13 +73,18 @@ class AgentLoop(
     }
 
     private suspend fun runTurns(sink: AgentEventSink) {
+        // maxIterations semantics:
+        //   -1  → unlimited
+        //    0  → tools disabled; send the request without tool specs
+        //   >0  → cap at that many tool rounds
         var iteration = 0
-        while (iteration++ < maxIterations) {
+        while (maxIterations < 0 || iteration < maxIterations) {
+            val useTools = maxIterations != 0
             val request = LlmRequest(
                 model = model,
                 system = systemPrompt(),
                 messages = compactor.compact(history),
-                tools = tools.specs(),
+                tools = if (useTools) tools.specs() else emptyList(),
                 maxTokens = maxTokens,
                 thinking = true,
                 thinkingBudget = thinkingBudget,
@@ -90,6 +95,14 @@ class AgentLoop(
             turn.failure?.let { sink.emit(AgentEvent.Error(it)); return }
 
             history += LlmMessage.assistant(turn.assistantParts())
+
+            if (!useTools) {
+                // Tools disabled: every turn is final.
+                sink.emit(AgentEvent.TurnCompleted(turn.stopReason, turn.usage))
+                persist()
+                return
+            }
+
             val calls = turn.toolCalls()
             if (calls.isEmpty()) {
                 sink.emit(AgentEvent.TurnCompleted(turn.stopReason, turn.usage))
@@ -99,8 +112,9 @@ class AgentLoop(
 
             history += executeCalls(calls, sink)
             persist()
+            iteration++
         }
-        sink.emit(AgentEvent.Error("Stopped after $maxIterations tool iterations without finishing."))
+        sink.emit(AgentEvent.Error("Stopped after $iteration tool iterations without finishing."))
     }
 
     /** Write the current conversation to the store (if wired). No-op when [store] is null. */

@@ -212,6 +212,26 @@ private fun ChatHeader(
             fill = Ca.colors.accentSoft,
             textColor = Ca.colors.accent,
         )
+        // Tool iterations: cycle OFF (0) → LIMITED (24) → UNLIMITED (-1).
+        val maxIter = backend.agent.maxIterations()
+        val iterLabel = when {
+            maxIter == 0 -> "Tools OFF"
+            maxIter < 0 -> "∞ tools"
+            else -> "$maxIter tools"
+        }
+        Chip(
+            text = iterLabel,
+            modifier = Modifier.clip(RoundedCornerShape(Ca.radius.pill)).clickable {
+                val next = when {
+                    maxIter == 0 -> 24      // OFF → default limited
+                    maxIter < 0 -> 0       // unlimited → OFF
+                    else -> -1              // limited → unlimited
+                }
+                backend.agent.setMaxIterations(next)
+            },
+            fill = Ca.colors.accentSoft,
+            textColor = Ca.colors.accent,
+        )
         IconButtonCa(CaIcons.clock, "History", onShowHistory, iconSize = 16, boxSize = 30)
         IconButtonCa(CaIcons.key, stringResource(Res.string.chat_manage_keys), onManage, iconSize = 16, boxSize = 30)
         IconButtonCa(CaIcons.refresh, stringResource(Res.string.chat_new), onNew, iconSize = 16, boxSize = 30)

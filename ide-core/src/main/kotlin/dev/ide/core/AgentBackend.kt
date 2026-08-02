@@ -574,12 +574,25 @@ internal class AgentBackend(private val ctx: BackendContext) : AgentService {
         UiAgentPermissionMode.PLAN_ONLY -> PermissionMode.PLAN_ONLY
     }
 
+    /** Set the tool-iteration cap. -1 = unlimited, 0 = tools off, >0 = that many rounds. Persisted + rebuilds the loop. */
+    fun setMaxIterations(value: Int) {
+        ctx.manager?.setPreference("settings.$AI_PAGE.maxIterations", value.toString())
+        resetLoop()
+    }
+
+    fun maxIterations(): Int = prefInt("maxIterations") ?: DEFAULT_MAX_ITERATIONS
+
     companion object {
         const val AI_PAGE = "ai"
         const val MODE_PREF = "agent.permissionMode"
         const val GATEWAY = "gateway"
 
-        /** Ceiling on tool-call rounds per user turn; the "settings.ai.maxIterations" pref overrides it. */
+        /**
+         * Default tool-iteration cap. The "settings.ai.maxIterations" pref overrides it. Semantics:
+         *   -1  → unlimited tool rounds
+         *    0  → tools disabled (model cannot call tools)
+         *   >0  → at most that many tool rounds per turn
+         */
         const val DEFAULT_MAX_ITERATIONS = 24
         /** Per-response output-token cap; the "settings.ai.maxTokens" pref overrides it. */
         const val DEFAULT_MAX_TOKENS = 8192

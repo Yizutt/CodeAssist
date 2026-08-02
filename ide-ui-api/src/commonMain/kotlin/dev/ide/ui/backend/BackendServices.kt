@@ -1006,6 +1006,15 @@ interface AgentService {
     /** Set the write-permission mode (persisted). */
     fun setPermissionMode(mode: UiAgentPermissionMode)
 
+    /**
+     * Set the tool-iteration cap. -1 = unlimited, 0 = tools off, >0 = that many rounds.
+     * Persisted to settings.ai.maxIterations and rebuilds the loop on change.
+     */
+    fun setMaxIterations(value: Int) {}
+
+    /** Current tool-iteration cap (-1 unlimited, 0 off, >0 limited). */
+    fun maxIterations(): Int = 24
+
     /** Answer a pending [permissionRequest]. */
     fun answerPermission(id: Int, decision: UiAgentPermissionDecision)
 
