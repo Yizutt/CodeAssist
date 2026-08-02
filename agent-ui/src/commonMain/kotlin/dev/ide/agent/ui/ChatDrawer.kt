@@ -193,7 +193,15 @@ private fun ChatHeader(
                 style = Ca.type.subhead,
                 fontWeight = FontWeight.SemiBold,
             )
-            ModelPicker(cfg = cfg, models = models, onPick = onPickModel)
+            if (chat.tokenUsage.turns > 0) {
+                Text(
+                    "${chat.tokenUsage.totalTokens.tok()} tokens · ${chat.tokenUsage.turns} turns",
+                    color = Ca.colors.textTertiary,
+                    style = Ca.type.caption2,
+                )
+            } else {
+                ModelPicker(cfg = cfg, models = models, onPick = onPickModel)
+            }
         }
         Chip(
             text = modeLabel(cfg.mode),
@@ -650,6 +658,13 @@ private fun pulseAlpha(active: Boolean): Float {
 }
 
 @Composable
+/** Format a token count compactly: 1234 -> "1.2k", 1500000 -> "1.5M". */
+private fun Int.tok(): String = when {
+    this >= 1_000_000 -> String.format("%.1fM", this / 1_000_000.0)
+    this >= 1_000 -> String.format("%.1fk", this / 1_000.0)
+    else -> toString()
+}
+
 private fun modeLabel(mode: UiAgentPermissionMode): String = when (mode) {
     UiAgentPermissionMode.ASK_EACH -> stringResource(Res.string.chat_mode_ask)
     UiAgentPermissionMode.AUTO_ACCEPT -> stringResource(Res.string.chat_mode_auto)

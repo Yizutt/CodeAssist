@@ -683,7 +683,17 @@ data class UiAgentChatState(
     val sessionId: String? = null,
     /** The human-readable title of the current session, if loaded from history. */
     val sessionTitle: String? = null,
+    /** Cumulative token usage for the current session. */
+    val tokenUsage: UiAgentTokenUsage = UiAgentTokenUsage(),
 )
+
+data class UiAgentTokenUsage(
+    val inputTokens: Int = 0,
+    val outputTokens: Int = 0,
+    val turns: Int = 0,
+) {
+    val totalTokens: Int get() = inputTokens + outputTokens
+}
 
 data class UiAgentModel(val id: String, val displayName: String)
 data class UiAgentProvider(

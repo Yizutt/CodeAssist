@@ -140,6 +140,29 @@ internal class AgentBackend(private val ctx: BackendContext) : AgentService {
 
     override fun currentSessionId(): String? = currentSessionId
 
+    // --- export / import -------------------------------------------------------------------------
+
+    /** Export the given session (or the current one) to [target]. Returns true on success. */
+    fun exportSession(id: String?, target: java.io.File): Boolean {
+        val session = if (id != null) sessionStore.load(id) else loop?.let {
+            val sId = currentSessionId ?: return false
+            dev.ide.agent.AgentSession(
+                id = sId,
+                title = "Export",
+                createdAt = System.currentTimeMillis(),
+                updatedAt = System.currentTimeMillis(),
+                provider = resolveConfig().selectedId,
+                model = "",
+                messages = emptyList(),
+            )
+        } ?: return false
+        return runCatching { sessionStore.export(session, target) }.isSuccess
+    }
+
+    /** Import a session from [source]. Returns the imported session's id, or null on failure. */
+    fun importSession(source: java.io.File): String? =
+        sessionStore.import(source)?.also { refreshSessions() }?.id
+
     private var signInJob: Job? = null
 
     private val permIds = AtomicInteger(0)
@@ -482,7 +505,20 @@ internal class AgentBackend(private val ctx: BackendContext) : AgentService {
                     if (it.id == event.id) it.copy(status = UiAgentToolStatus.DENIED, detail = event.reason) else it
                 })
             }
-            is AgentEvent.TurnCompleted -> finishStreaming()
+            is AgentEvent.TurnCompleted -> {
+                // Accumulate token usage for the session.
+                event.usage?.let { u ->
+                    _chatState.update { s ->
+                        val t = s.tokenUsage
+                        s.copy(tokenUsage = UiAgentTokenUsage(
+                            inputTokens = t.inputTokens + u.inputTokens,
+                            outputTokens = t.outputTokens + u.outputTokens,
+                            turns = t.turns + 1,
+                        ))
+                    }
+                }
+                finishStreaming()
+            }
             is AgentEvent.Error -> {
                 appendError(event.message, canRetry = true)
                 finishStreaming()
@@ -521,11 +557,18 @@ internal class AgentBackend(private val ctx: BackendContext) : AgentService {
     private fun projectContext(): String? {
         val engine = ctx.servicesOrNull ?: return null
         val root = engine.workspaceRoot.toString()
-        val modules = runCatching { engine.modules().joinToString(", ") { it.name } }.getOrNull().orEmpty()
+        val modules = runCatching { engine.modules() }.getOrNull().orEmpty()
         return buildString {
             append("Project root: ").append(root).append('.')
-            if (modules.isNotBlank()) append("\nOpen project modules: ").append(modules).append('.')
-            append("\nFile paths are absolute or relative to the project root; a relative path always stays inside the project.")
+            if (modules.isNotEmpty()) {
+                append("\n\nModules (${modules.size}):")
+                modules.forEach { m ->
+                    val deps = m.dependencies.size
+                    append("\n  - ${m.name} (${m.type})")
+                    if (deps > 0) append(" [$deps dependencies]")
+                }
+            }
+            append("\n\nNote: File paths are absolute or relative to the project root; a relative path always stays inside the project.")
         }
     }
 

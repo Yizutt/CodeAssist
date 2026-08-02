@@ -202,6 +202,53 @@ fun builtinTools(ws: AgentWorkspace): List<AgentTool> = listOf(
         mutating = true,
         summary = { "run ${it.optString("module") ?: "program"}" },
     ) { args -> formatRun(ws.runProgram(args.optString("module"), args.optString("stdin").orEmpty())) },
+
+    // --- git tools -------------------------------------------------------------------------------
+
+    tool(
+        name = "git_status",
+        description = "Show working tree status: modified, staged, and untracked files.",
+        parameters = toolSchema { },
+        summary = { "git status" },
+    ) { _ -> runGit(ws) },
+
+    tool(
+        name = "git_diff",
+        description = "Show changes between working tree and index (or between index and HEAD with staged=true).",
+        parameters = toolSchema {
+            boolean("staged", "Show staged changes instead of unstaged.", required = false)
+        },
+        summary = { if (it.optBoolean("staged") == true) "git diff --staged" else "git diff" },
+    ) { args ->
+        val staged = if (args.optBoolean("staged") == true) "--staged" else ""
+        runGit(ws, "diff", staged.trim())
+    },
+
+    tool(
+        name = "git_log",
+        description = "Show recent commit history.",
+        parameters = toolSchema {
+            integer("count", "Number of commits to show.", required = false)
+        },
+        summary = { "git log" },
+    ) { args ->
+        val count = args.optInt("count") ?: 5
+        runGit(ws, "log", "--oneline", "-$count")
+    },
+
+    // --- terminal tool ----------------------------------------------------------------------------
+
+    tool(
+        name = "run_terminal",
+        description = "Execute a shell command in the project root and return its stdout/stderr. " +
+            "Time-limited to 30 seconds. Use sparingly for build checks, file operations, and queries " +
+            "that other tools cannot cover.",
+        parameters = toolSchema {
+            string("command", "Shell command to execute.")
+        },
+        mutating = true,
+        summary = { "run: ${it.optString("command").orEmpty().take(50)}" },
+    ) { args -> runTerminal(ws, args.string("command")) },
 )
 
 private fun formatRun(r: RunResult): ToolExecutionResult {
@@ -271,4 +318,58 @@ private fun tool(
     override val mutating: Boolean = mutating
     override fun summarize(args: ToolArgs): String = summary(args)
     override suspend fun execute(args: ToolArgs): ToolExecutionResult = action(args)
+}
+
+// --- command execution helpers -------------------------------------------------------------------
+
+private const val TERMINAL_TIMEOUT_SECONDS = 30L
+
+/** Run a git command in the project root and capture its output. */
+private fun runGit(ws: AgentWorkspace, vararg args: String): ToolExecutionResult {
+    val root = ws.projectRoot() ?: return ToolExecutionResult.error("No project is open.")
+    val command = buildList { add("git"); addAll(args) }
+    return try {
+        val process = ProcessBuilder(command)
+            .directory(java.io.File(root))
+            .redirectErrorStream(true)
+            .start()
+        val finished = process.waitFor(TERMINAL_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS)
+        if (!finished) {
+            process.destroyForcibly()
+            return ToolExecutionResult.error("git ${args.joinToString(" ")} timed out after ${TERMINAL_TIMEOUT_SECONDS}s.")
+        }
+        val output = process.inputStream.bufferedReader().readText().trim()
+        if (process.exitValue() == 0) {
+            ToolExecutionResult.ok(output.ifEmpty { "(no output)" })
+        } else {
+            ToolExecutionResult.error(output.ifEmpty { "git ${args.joinToString(" ")} failed (exit ${process.exitValue()})." })
+        }
+    } catch (e: Exception) {
+        ToolExecutionResult.error("Failed to run git: ${e.message}")
+    }
+}
+
+/** Run an arbitrary shell command in the project root. */
+private fun runTerminal(ws: AgentWorkspace, command: String): ToolExecutionResult {
+    if (command.isBlank()) return ToolExecutionResult.error("command must not be empty.")
+    val root = ws.projectRoot() ?: return ToolExecutionResult.error("No project is open.")
+    return try {
+        val process = ProcessBuilder("/bin/sh", "-c", command)
+            .directory(java.io.File(root))
+            .redirectErrorStream(true)
+            .start()
+        val finished = process.waitFor(TERMINAL_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS)
+        if (!finished) {
+            process.destroyForcibly()
+            return ToolExecutionResult.error("Command timed out after ${TERMINAL_TIMEOUT_SECONDS}s.")
+        }
+        val output = process.inputStream.bufferedReader().readText().trim()
+        if (process.exitValue() == 0) {
+            ToolExecutionResult.ok(output.ifEmpty { "(no output)" })
+        } else {
+            ToolExecutionResult.error("Exit ${process.exitValue()}: ${output.take(500)}")
+        }
+    } catch (e: Exception) {
+        ToolExecutionResult.error("Failed to run command: ${e.message}")
+    }
 }

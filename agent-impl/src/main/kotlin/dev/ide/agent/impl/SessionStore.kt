@@ -65,6 +65,22 @@ class SessionStore(private val dir: File) {
         save(session.copy(title = title, updatedAt = System.currentTimeMillis()))
     }
 
+    /** Export a session to a user-chosen file (for backup or sharing). */
+    fun export(session: AgentSession, target: File) {
+        target.parentFile?.mkdirs()
+        target.writeText(json.encodeToString(AgentSession.serializer(), session))
+    }
+
+    /** Import a session from a file, assigning it a new id so it coexists with existing sessions. */
+    fun import(source: File): AgentSession? = runCatching {
+        if (!source.exists()) return null
+        val session = json.decodeFromString(AgentSession.serializer(), source.readText())
+        // Assign a new id so the imported session coexists with any existing copy.
+        val imported = session.copy(id = newId(), updatedAt = System.currentTimeMillis())
+        save(imported)
+        imported
+    }.getOrNull()
+
     companion object {
         fun newId(): String = UUID.randomUUID().toString()
 
