@@ -78,6 +78,23 @@ class ComposeDispatcher(
         executor.lambdaErrorSink = { t -> contentLambdaError = contentLambdaError ?: t }
     }
 
+    /** The VM-backed composer-op driver (milestone A), when a bytecode executor is present. */
+    private val vmOps: VmComposerOps? = vmComposables?.let { VmComposerOps(it) }
+
+    /**
+     * Pick the group/slot protocol driver by the composer's nature: [VmComposerOps] for an INTERPRETED (`VmObject`)
+     * composer produced by the project's own runtime (the interpreted-runtime path — the too-new version ceiling),
+     * host reflection ([ReflectiveComposerOps]) for a real host composer (the bridged-composer path). A real host
+     * composer is never VM-owned, so the existing path is unchanged.
+     */
+    internal fun opsFor(composer: Any): ComposerOps =
+        if (vmComposables?.ownsComposer(composer) == true) vmOps!! else ReflectiveComposerOps
+
+    /** Whether [value] is a composer this dispatcher threads — a real host `Composer` OR an interpreted one (the
+     *  VM-owned composer). Used to find the composer among a `@Composable` content lambda's callback args. */
+    private fun isComposer(value: Any?): Boolean =
+        value != null && (COMPOSER.isInstance(value) || vmComposables?.ownsComposer(value) == true)
+
     /** The live composer for the current composition pass; null outside a composition. */
     @Volatile
     var composer: Any? = null
@@ -306,8 +323,9 @@ class ComposeDispatcher(
         // (the IDE's own UI around the preview) isn't corrupted, which otherwise surfaces on the host's next
         // `endNode` as "Cannot end node insertion, there are no pending operations". On the normal path we close
         // exactly the group we opened.
-        val marker = ComposableAbi.currentMarker(composer)
-        ComposableAbi.startGroup(composer, call.callSiteKey.value)
+        val ops = opsFor(composer)
+        val marker = ops.currentMarker(composer)
+        ops.startGroup(composer, call.callSiteKey.value)
         var completed = false
         try {
             // Bind named arguments back to their declared positions before the ABI binds them to JVM slots
@@ -362,8 +380,8 @@ class ComposeDispatcher(
         } finally {
             // Normal completion: close exactly the call-site group. Failure: unwind to the pre-call marker so
             // a composable that died with a node/group still open can't corrupt the surrounding composition.
-            if (completed) ComposableAbi.endGroup(composer)
-            else runCatching { ComposableAbi.endToMarker(composer, marker) }
+            if (completed) ops.endGroup(composer)
+            else runCatching { ops.endToMarker(composer, marker) }
         }
     }
 
@@ -411,44 +429,60 @@ class ComposeDispatcher(
                 // freeze the interpreter's per-pass guards never see. On a storm, stop re-running the body and
                 // signal the renderer to drop the interpreted subtree (disposing the offending composable's
                 // effects, which stops the state writes driving the loop). Returns null (Unit content).
-                "invoke" -> if (contentLambdaStorm(lambda)) {
-                    contentLambdaError = contentLambdaError ?: InterpreterException(RUNAWAY_MESSAGE)
-                    notifyRunaway()
-                    null
-                } else {
+                "invoke" -> {
                     val a = callArgs?.toList() ?: emptyList()
-                    val composerArg = a.firstOrNull { COMPOSER.isInstance(it) }
-                    val real = a.takeWhile { !COMPOSER.isInstance(it) } // receiver/value params, before the composer
-                    val prev = composer
-                    if (composerArg != null) composer = composerArg
-                    // Whether composable calls are legal inside THIS lambda is decided by the actual invocation:
-                    // Compose passes a composer to a `@Composable` lambda (a `Column {}`/`items {}` content slot →
-                    // composables allowed) but NOT to a non-composable one (a `LazyListScope.() -> Unit` list
-                    // builder → a stray composable there is suppressed, so it can't compose against the stale
-                    // composer and hang). Runtime-derived, so it's robust to how ComposableAbi bound the args.
-                    val prevSuppressed = composablesSuppressed.get()
-                    composablesSuppressed.set(composerArg == null)
-                    try {
-                        lambda.invoke(real)
-                    } catch (ce: kotlin.coroutines.cancellation.CancellationException) {
-                        throw ce // recomposition cancellation is control flow — never swallow it
-                    } catch (e: Throwable) {
-                        // A malformed/half-typed buffer can make an interpreted composable throw mid-composition
-                        // (a wrong-typed arg, an unresolved call, an ABI mismatch, or a StackOverflow/OutOfMemory
-                        // from runaway user code). This lambda runs during Compose's measure/subcompose pass
-                        // (LazyColumn items, Scaffold content), OUTSIDE the preview renderer's try/catch — so
-                        // letting anything propagate kills the host thread and takes down the whole IDE (the
-                        // Compose preview runs in-process, with no process isolation). Contain ALL throwables incl.
-                        // Error: the lambda returns normally (emitting whatever composed before the failure), the
-                        // enclosing library composable balances its own groups, and the preview degrades to a
-                        // partial render surfaced through [contentLambdaError] instead of crashing. The recursion
-                        // and per-pass guards (interp-core Interpreter) trip before most StackOverflow/hang cases
-                        // reach here; this is the backstop for anything they don't.
-                        contentLambdaError = contentLambdaError ?: e
-                        Unit
-                    } finally {
-                        composer = prev
-                        composablesSuppressed.set(prevSuppressed)
+                    // A SUSPEND block that reached the composable proxy: a `LaunchedEffect { }` / `produceState { }`
+                    // body is a @Composable whose lambda parameter is itself `suspend`, so [invokeComposable] proxies
+                    // it HERE along with the real content lambdas. The runtime invokes such a block with a trailing
+                    // Continuation (never a Composer) — route it through the coroutine bridge exactly like
+                    // [guardedLambdaProxy]/the default proxy, so `delay`/`withFrameNanos` suspend on a background
+                    // thread under a managed [dev.ide.interp.SuspendContext] instead of running synchronously on the
+                    // composition thread and throwing "delay outside an interpreted coroutine". A genuine composable
+                    // content lambda is invoked with a Composer, never a Continuation, so it never takes this branch.
+                    if (a.lastOrNull() is kotlin.coroutines.Continuation<*>) suspendBridge.runSuspending(lambda, a)
+                    else if (contentLambdaStorm(lambda)) {
+                        // Runaway-recomposition breaker (library-composable path): a library composable that keeps
+                        // invalidating itself re-invokes this content lambda every pass with no frame boundary — an
+                        // IDE freeze the interpreter's per-pass guards never see. On a storm, stop re-running the
+                        // body and signal the renderer to drop the interpreted subtree (disposing the offending
+                        // composable's effects, which stops the state writes driving the loop). Returns null (Unit).
+                        contentLambdaError = contentLambdaError ?: InterpreterException(RUNAWAY_MESSAGE)
+                        notifyRunaway()
+                        null
+                    } else {
+                        val composerArg = a.firstOrNull { isComposer(it) }
+                        val real = a.takeWhile { !isComposer(it) } // receiver/value params, before the composer
+                        val prev = composer
+                        if (composerArg != null) composer = composerArg
+                        // Whether composable calls are legal inside THIS lambda is decided by the actual invocation:
+                        // Compose passes a composer to a `@Composable` lambda (a `Column {}`/`items {}` content slot →
+                        // composables allowed) but NOT to a non-composable one (a `LazyListScope.() -> Unit` list
+                        // builder → a stray composable there is suppressed, so it can't compose against the stale
+                        // composer and hang). Runtime-derived, so it's robust to how ComposableAbi bound the args.
+                        val prevSuppressed = composablesSuppressed.get()
+                        composablesSuppressed.set(composerArg == null)
+                        try {
+                            lambda.invoke(real)
+                        } catch (ce: kotlin.coroutines.cancellation.CancellationException) {
+                            throw ce // recomposition cancellation is control flow — never swallow it
+                        } catch (e: Throwable) {
+                            // A malformed/half-typed buffer can make an interpreted composable throw mid-composition
+                            // (a wrong-typed arg, an unresolved call, an ABI mismatch, or a StackOverflow/OutOfMemory
+                            // from runaway user code). This lambda runs during Compose's measure/subcompose pass
+                            // (LazyColumn items, Scaffold content), OUTSIDE the preview renderer's try/catch — so
+                            // letting anything propagate kills the host thread and takes down the whole IDE (the
+                            // Compose preview runs in-process, with no process isolation). Contain ALL throwables incl.
+                            // Error: the lambda returns normally (emitting whatever composed before the failure), the
+                            // enclosing library composable balances its own groups, and the preview degrades to a
+                            // partial render surfaced through [contentLambdaError] instead of crashing. The recursion
+                            // and per-pass guards (interp-core Interpreter) trip before most StackOverflow/hang cases
+                            // reach here; this is the backstop for anything they don't.
+                            contentLambdaError = contentLambdaError ?: e
+                            Unit
+                        } finally {
+                            composer = prev
+                            composablesSuppressed.set(prevSuppressed)
+                        }
                     }
                 }
                 "toString" -> "InterpretedComposableLambda"
@@ -488,8 +522,9 @@ class ComposeDispatcher(
             if (a is InterpretedLambda && callee.paramTypes.getOrNull(i)?.isComposable == true) a else null
         }
         if (slots.isEmpty()) return NOT_WINDOWED
-        val marker = ComposableAbi.currentMarker(composer)
-        ComposableAbi.startGroup(composer, call.callSiteKey.value)
+        val ops = opsFor(composer)
+        val marker = ops.currentMarker(composer)
+        ops.startGroup(composer, call.callSiteKey.value)
         var completed = false
         try {
             // The slots (title/text/buttons) are a FIXED set, so composing them sequentially under the call-site
@@ -499,7 +534,7 @@ class ComposeDispatcher(
             completed = true
             return Unit
         } finally {
-            if (completed) ComposableAbi.endGroup(composer) else runCatching { ComposableAbi.endToMarker(composer, marker) }
+            if (completed) ops.endGroup(composer) else runCatching { ops.endToMarker(composer, marker) }
         }
     }
 
@@ -539,16 +574,17 @@ class ComposeDispatcher(
             runCatching { Class.forName(fqn, false, loader ?: javaClass.classLoader).getField("INSTANCE").get(null) }.getOrNull()
                 ?: libraryExecutor?.takeIf { it.hasClass(fqn) }?.objectInstance(fqn)
         }
-        val marker = ComposableAbi.currentMarker(composer)
-        ComposableAbi.startGroup(composer, call.callSiteKey.value)
+        val ops = opsFor(composer)
+        val marker = ops.currentMarker(composer)
+        ops.startGroup(composer, call.callSiteKey.value)
         var completed = false
         try {
             content.invoke(listOfNotNull(receiver))
             completed = true
             return Unit
         } finally {
-            if (completed) ComposableAbi.endGroup(composer)
-            else runCatching { ComposableAbi.endToMarker(composer, marker) }
+            if (completed) ops.endGroup(composer)
+            else runCatching { ops.endToMarker(composer, marker) }
         }
     }
 
@@ -640,15 +676,16 @@ class ComposeDispatcher(
         try { builder.invoke(listOf(collector)) } finally { navCollector = prev }
         if (collector.destinations.isEmpty()) return Unit
         val content = matchDestination(start, collector) ?: collector.destinations.values.first()
-        val marker = ComposableAbi.currentMarker(composer)
-        ComposableAbi.startGroup(composer, call.callSiteKey.value)
+        val ops = opsFor(composer)
+        val marker = ops.currentMarker(composer)
+        ops.startGroup(composer, call.callSiteKey.value)
         var completed = false
         try {
             content.invoke(List(content.paramCount) { null })
             completed = true
             return Unit
         } finally {
-            if (completed) ComposableAbi.endGroup(composer) else runCatching { ComposableAbi.endToMarker(composer, marker) }
+            if (completed) ops.endGroup(composer) else runCatching { ops.endToMarker(composer, marker) }
         }
     }
 

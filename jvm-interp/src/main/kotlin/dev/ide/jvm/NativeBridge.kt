@@ -42,6 +42,11 @@ class ReflectiveBridge(
      *  Looper, running outside the render's error boundary) degrades instead of crashing the process; a console
      *  run leaves it null so failures propagate. */
     private val proxyExceptionSink: ((Throwable) -> Unit)? = null,
+    /** When set, supplies the value a guarded proxy method returns after a failure (given the method, the real
+     *  arguments, and the error) — for a caller that cannot tolerate the type's zero value. A Compose measure
+     *  lambda whose zero (null `MeasureResult`) would NPE the layout pass hands back an empty result instead.
+     *  Return null to fall back to [zeroReturn]. Consulted after [proxyExceptionSink]. */
+    private val proxyFallback: ((java.lang.reflect.Method, Array<Any?>, Throwable) -> Any?)? = null,
 ) : NativeBridge {
 
     // Reflection resolution is deterministic given the class + name + descriptor and is repeated on every
@@ -58,6 +63,11 @@ class ReflectiveBridge(
 
     private fun loadClass(internal: String): Class<*> =
         classCache.getOrPut(internal) { Class.forName(internal.replace('/', '.'), false, loader) }
+
+    /** Whether [internal] is loadable on the host at all — false for a project-only type (e.g. a newer Compose
+     *  class the bundled runtime lacks) that is interpreted, never bridged. */
+    private fun classLoadable(internal: String): Boolean =
+        classCache.containsKey(internal) || runCatching { loadClass(internal) }.isSuccess
 
     /** Parameter [Class]es for a method descriptor, cached (the parse and class loads otherwise repeat per call). */
     private fun paramClasses(descriptor: String): Array<Class<*>> =
@@ -121,7 +131,15 @@ class ReflectiveBridge(
      *  passed through an Object-typed parameter (stored in a container, an AtomicReference) is proxied as its
      *  OWN functional interface from the lambda's call site, since Object names no interface to implement. */
     private fun marshalIn(value: Any?, descriptor: String): Any? = when {
-        value is VmLambda -> proxyFor(value, if (descriptor == "Ljava/lang/Object;") "L${value.interfaceType};" else descriptor)
+        value is VmLambda -> {
+            val target = if (descriptor == "Ljava/lang/Object;") "L${value.interfaceType};" else descriptor
+            // A host-absent interface (a project Compose type the bundled runtime lacks, e.g. foundation.style.Style):
+            // no host code can INVOKE the SAM — it holds no reference to the interface — so it can only store the
+            // value and hand it back to interpreted code. Pass the interpreted lambda through opaquely rather than
+            // fail building a Proxy of a class that isn't on the host. (A VmObject already passes through, below.)
+            if (target.startsWith("L") && !classLoadable(target.substring(1, target.length - 1))) value
+            else proxyFor(value, target)
+        }
         descriptor == "Z" -> (value as Int) != 0
         descriptor == "B" -> (value as Int).toByte()
         descriptor == "C" -> (value as Int).toChar()
@@ -222,16 +240,16 @@ class ReflectiveBridge(
                 else -> {
                     val paramTypes = method.parameterTypes
                     val vmArgs = (callArgs ?: emptyArray()).mapIndexed { i, a -> realArgToVm(a, paramTypes[i]) }
-                    val sink = proxyExceptionSink
                     // invokeSamReal (not invokeSam): the result crosses to platform code here, so an interpreted
                     // object return (e.g. a `DisposableEffectResult` from an inlined `onDispose { }`) is converted
                     // to its real peer — else the raw VmObject reaches the caller and ClassCastExceptions there.
-                    if (sink == null) marshalReturn(lambda.invokeSamReal(vmArgs), method.returnType)
+                    val guarded = proxyExceptionSink != null || proxyFallback != null
+                    if (!guarded) marshalReturn(lambda.invokeSamReal(vmArgs), method.returnType)
                     else try {
                         marshalReturn(lambda.invokeSamReal(vmArgs), method.returnType)
                     } catch (t: Throwable) {
-                        sink(t)
-                        zeroReturn(method.returnType)
+                        proxyExceptionSink?.invoke(t)
+                        proxyFallback?.invoke(method, callArgs ?: emptyArray(), t) ?: zeroReturn(method.returnType)
                     }
                 }
             }

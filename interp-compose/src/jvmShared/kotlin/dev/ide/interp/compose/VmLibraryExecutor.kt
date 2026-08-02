@@ -1,5 +1,6 @@
 package dev.ide.interp.compose
 
+import androidx.compose.ui.layout.MeasureScope
 import dev.ide.interp.InterpretedLambda
 import dev.ide.interp.InterpreterException
 import dev.ide.interp.LibraryExecutor
@@ -9,6 +10,7 @@ import dev.ide.jvm.AsmPeerFactory
 import dev.ide.jvm.ClassBytesSource
 import dev.ide.jvm.InterpretPolicy
 import dev.ide.jvm.PeerFactory
+import dev.ide.jvm.ReflectiveBridge
 import dev.ide.jvm.ReifiedInlineExecutor
 import dev.ide.jvm.Vm
 import dev.ide.jvm.VmMethodView
@@ -52,6 +54,12 @@ class VmLibraryExecutor(
     /** Test seam: the namespaces interpreted from the project jars even when host-loadable (see
      *  [PROJECT_PREFERRED_PREFIXES], the production default). */
     private val projectPreferredPrefixes: List<String> = PROJECT_PREFERRED_PREFIXES,
+    /** Namespaces that stay BRIDGED even under a [projectPreferredPrefixes] match, when host-loadable: the
+     *  Android platform CompositionLocals (`ui.platform.LocalContext`/`LocalConfiguration`/…) must be the SAME
+     *  instances the host provides around the preview, or an interpreted read finds them "not present" (the
+     *  provided value is keyed by the bundled local instance, not the interpreted copy). A new (non-host-loadable)
+     *  class in these namespaces still interprets — there is nothing to bridge to. */
+    private val projectExcludedPrefixes: List<String> = PROJECT_EXCLUDED_PREFIXES,
 ) : LibraryExecutor, AutoCloseable {
 
     /** When set (the preview dispatcher wires it to its partial-render channel), a failure inside an
@@ -84,7 +92,8 @@ class VmLibraryExecutor(
      *  bytes to actually be present in the jars, so a project that ships no Material3 of its own keeps
      *  bridging to the bundled build unchanged. */
     private fun shouldInterpret(binaryName: String): Boolean =
-        projectPreferredPrefixes.any { binaryName.startsWith(it) } || !isHostLoadable(binaryName)
+        (projectPreferredPrefixes.any { binaryName.startsWith(it) } && projectExcludedPrefixes.none { binaryName.startsWith(it) }) ||
+            !isHostLoadable(binaryName)
 
     /** Class bytes for the project's library jars (a downloaded Maven jar / AAR), keyed by internal name. Shared
      *  by the main VM and the reified-inline executor (a library reified inline lives in one of these jars). */
@@ -108,6 +117,20 @@ class VmLibraryExecutor(
     private val vm = Vm(
         source = jarSource,
         policy = InterpretPolicy { internalName -> shouldInterpret(internalName.replace('/', '.')) },
+        // Route a failure inside an interpreted lambda invoked by REAL code (a Compose measure/effect/callback
+        // lambda the VM handed to the runtime) to the same [lambdaErrorSink] the VM-executed path uses, so it
+        // degrades + is reported instead of the raw [dev.ide.jvm.VmException] escaping to the host's main thread
+        // and crashing the IDE. Read the var lazily so the dispatcher can wire the sink after construction; when
+        // it is null (no preview channel) the bridge still degrades (this executor is preview-only).
+        bridge = ReflectiveBridge(
+            proxyExceptionSink = { t -> lambdaErrorSink?.invoke(t) },
+            // A failed MEASURE lambda would otherwise return null, and the layout pass NPEs on
+            // MeasureResult.getWidth(); hand back an empty 0x0 result so a broken interpreted composable
+            // (e.g. a Material3 TextField whose SubcomposeLayout measure can't be interpreted) degrades to a
+            // blank instead of crashing the IDE. Detected by the receiver being a MeasureScope — the SAM's
+            // erased return type is Object, so it can't be matched on the return type.
+            proxyFallback = { _, args, _ -> (args.firstOrNull() as? MeasureScope)?.layout(0, 0) {} },
+        ),
         peerFactory = peerFactory,
     )
 
@@ -115,11 +138,25 @@ class VmLibraryExecutor(
      *  call-site type argument — the general reification mechanism. Reads bytes from the project jars first, then
      *  the host classpath (a standard-library reified inline like `filterIsInstance` on desktop). Lazy: only
      *  built when a reified inline is actually hit. */
-    private val reifiedExecutor by lazy { ReifiedInlineExecutor(extraSource = jarSource, loader = hostLoader, peerFactory = peerFactory, nameMatcher = kotlinNames) }
+    private val reifiedExecutor by lazy {
+        ReifiedInlineExecutor(
+            extraSource = jarSource, loader = hostLoader, peerFactory = peerFactory, nameMatcher = kotlinNames,
+            // Interpret the SAME project classes the main vm does, so a class `new`ed inside a reified-inline body
+            // (e.g. TextField's rememberSaveable constructing a project foundation.style.Style) is interpreted here
+            // too, not bridged to the host's older Compose (which lacks it). Mirrors the main vm's policy (line ~119).
+            alsoInterpret = { internalName -> shouldInterpret(internalName.replace('/', '.')) },
+        )
+    }
 
     override fun hasClass(fqn: String): Boolean = vm.hasInterpretedClass(fqn)
 
     override fun ownsInstance(value: Any?): Boolean = isVmPeer(value)
+
+    /** Whether [value] is a VM-owned interpreted `androidx.compose.runtime.Composer` — the interpreted composer the
+     *  source-composable path threads (as opposed to a bridged host `Composer`, or any other VM object). Lets the
+     *  dispatcher pick the VM-backed [ComposerOps] and detect the composer among a content lambda's callback args. */
+    fun ownsComposer(value: Any?): Boolean =
+        value != null && isVmPeer(value) && vm.isInterpretedInstanceOf(value, COMPOSER_BINARY)
 
     /** Release the open library-jar handles. Idempotent; the executor is unusable afterward, so callers close it
      *  only when discarding it (the preview host does this on file switch / when it leaves composition). */
@@ -479,6 +516,7 @@ class VmLibraryExecutor(
 
     private companion object {
         const val COMPOSER_DESC = "Landroidx/compose/runtime/Composer;"
+        const val COMPOSER_BINARY = "androidx.compose.runtime.Composer"
         const val BITS_PER_DEFAULT_INT = 31
 
         /** Namespaces the VM interprets from the PROJECT's library jars even when the host can load them —
@@ -499,6 +537,10 @@ class VmLibraryExecutor(
          *  bridged; widen this list (foundation/ui) only if their value types also need to be the project's copy.
          *  See [[jvm-interp-bytecode-vm]]. */
         val PROJECT_PREFERRED_PREFIXES = listOf("androidx.compose.material3.")
+
+        /** Kept BRIDGED even under a preferred-prefix match (when host-loadable): the Android platform
+         *  CompositionLocals live here and must be the host-provided instances (see [projectExcludedPrefixes]). */
+        val PROJECT_EXCLUDED_PREFIXES = listOf("androidx.compose.ui.platform.")
     }
 
     private fun primClass(d: Char): Class<*> = when (d) {

@@ -1,5 +1,12 @@
 package dev.ide.android
 
+import android.graphics.Bitmap
+import android.os.Handler
+import android.os.Looper
+import android.view.KeyEvent as AndroidKeyEvent
+import android.view.MotionEvent as AndroidMotionEvent
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,14 +23,24 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.pointer.pointerInteropFilter
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import dev.ide.interp.PreviewResourceResolver
@@ -31,6 +48,7 @@ import dev.ide.interp.PreviewSandboxPolicy
 import dev.ide.interp.SandboxCategory
 import dev.ide.interp.SandboxFinding
 import androidx.compose.ui.unit.sp
+import dev.ide.android.preview.ComposePreviewRemoteClient
 import dev.ide.core.IdeServicesBackend
 import dev.ide.core.LoweredComposePreview
 import dev.ide.core.PreviewOutcome
@@ -53,6 +71,15 @@ import kotlinx.coroutines.withContext
  *  index; the cap only bites the degenerate case where readiness never arrives (e.g. an offline scratch). */
 private const val PREVIEW_READY_POLL_MS = 600L
 private const val PREVIEW_READY_MAX_ATTEMPTS = 300
+
+/** Off-screen render canvas for an isolated preview when `@Preview` declares no size (px = dp × density, clamped). */
+private const val DEFAULT_PREVIEW_WIDTH_DP = 411
+private const val DEFAULT_PREVIEW_HEIGHT_DP = 731
+private const val MAX_PREVIEW_PX = 2400
+/** Fall back to the in-process renderer if the `:preview` session streams no frame within this long of opening. */
+private const val REMOTE_FIRST_FRAME_TIMEOUT_MS = 6_000L
+
+private val inProcessLog = Log.logger("AndroidComposePreviewHost")
 
 /**
  * The on-device Compose preview host (the editor's live-pixel renderer). Lowers the open file's `@Preview`
@@ -103,68 +130,12 @@ class AndroidComposePreviewHost(private val backend: IdeServicesBackend) : Compo
                 delay(PREVIEW_READY_POLL_MS)
             }
         }
-        // The project's library closure executes in the bytecode VM: dependency classes are read straight from
-        // the resolved jars and interpreted (bridged to the IDE's bundled runtime), so downloaded code never
-        // reaches a ClassLoader. Null while the jar list resolves / on failure → the renderer falls back to the
-        // IDE's bundled Compose, which still serves standard composables.
-        val libraryExecutor by produceState<VmLibraryExecutor?>(null, path) {
-            value = runCatching {
-                backend.composePreviewLibs(path)?.let { libs ->
-                    // Disk-backed peer-dex cache (workspace-wide, shared across previews): a rebuilt executor —
-                    // and the first preview after an app restart — reuses previously-dexed peers instead of
-                    // re-running D8 (~0.4s → ~40ms per open; see DexPeerFactory).
-                    val peerDexCache = runCatching { libs.cacheDir.resolveSibling("vm-peer-dex") }.getOrNull()
-                    withContext(Dispatchers.IO) {
-                        // Guard the peer proxies: an interpreted object realized as a real interface (a Compose
-                        // Node, a Runnable/Comparator) can have its methods invoked by platform code on a
-                        // measure/layout/draw pass or a posted callback, OUTSIDE the render's error boundary — an
-                        // exception there would crash the app (seen in 3.8.3 as VmException/NoSuchMethodError at
-                        // AsmPeerFactory.createProxyPeer). The sink degrades that to a skipped call.
-                        VmLibraryExecutor(
-                            libs.jars,
-                            peerFactory = DexPeerFactory(peerDexCache, proxyExceptionSink = { t ->
-                                log.warn("interpreted preview peer call failed (skipped): ${t.message ?: t.javaClass.simpleName}")
-                            }),
-                        )
-                    }
-                }
-            }.getOrNull()
-        }
-        // Close the executor's open library-jar handles when it is replaced (a new file/path produces a fresh
-        // one) or the preview leaves composition — produceState never disposes the value it superseded. The
-        // local capture matters: onDispose must close THIS executor, not whatever the state holds later.
-        DisposableEffect(libraryExecutor) {
-            val exec = libraryExecutor
-            onDispose { exec?.close() }
-        }
-        // Close the executor's open library-jar handles when it is replaced (a new file/path produces a fresh
-        // one) or the preview leaves composition — produceState never disposes the value it superseded, so
-        // without this each discarded executor leaks its jar FDs until GC, and ART logs a "ZipFile.close" warning
-        // per handle. onDispose fires with the exec that was just superseded, so the current one stays open.
-        DisposableEffect(libraryExecutor) {
-            val exec = libraryExecutor
-            onDispose { exec?.close() }
-        }
-        // Interpreter-mediated project resources: fetch the module's res off-thread, then build a resolver with
-        // the previewed density + night baked in (see [AndroidPreviewResources]) so `stringResource(R.string.x)`
-        // / `colorResource`/`painterResource`/… resolve against the project (not the IDE app's own Resources).
-        // Null while it builds / for a non-Android module → the renderer falls back to no resource resolution.
+        // Heavy in-process render inputs (the bytecode VM executor over the module jars + the parsed resource
+        // resolver) are built lazily inside [InProcessComposePreview] — the FALLBACK path — so the isolated
+        // (`:preview`) render, the common case when the toggle is on, doesn't pay to open every jar and parse all
+        // res XML only to discard it (the remote process rebuilds its own from the jar/res roots).
         val night = dark || (preview.config.nightMode == true)
         val density = LocalDensity.current.density
-        // The resolver loads async (off-thread res parse). Track "settled" so the render WAITS for it — else the
-        // first render fires with a null resolver (before this completes), `stringResource(R.string.x)` throws
-        // "no resource resolver", and that error latches (`renderError` never clears on a later good render).
-        // `.first` = the resolver (or genuine null for a non-Android module); `.second` = load finished.
-        val resLoad by produceState(null as PreviewResourceResolver? to false, path, night, density) {
-            val resolver = runCatching {
-                val res = backend.composePreviewResources(path)
-                if (res == null) log.warn("no preview resources for $path — R.string/colorResource/… won't resolve (module has no Android namespace or an empty resource repo)")
-                res?.let { withContext(Dispatchers.IO) { AndroidPreviewResources(it.repo, it.namespace, density, night) } }
-            }.onFailure { log.warn("building preview resources for $path failed: ${it.javaClass.name}: ${it.message}", it) }.getOrNull()
-            value = resolver to true
-        }
-        val resources = resLoad.first
-        val resourcesReady = resLoad.second
         // The preview sandbox: block file/network/Android-system/process escapes per the project's Compose
         // Preview settings. The default-restricted policy serves the FIRST pass too (no unrestricted window
         // while the settings read is in flight); the configured one replaces it only when the project
@@ -174,9 +145,6 @@ class AndroidComposePreviewHost(private val backend: IdeServicesBackend) : Compo
             val cats = runCatching { backend.composePreviewSandbox() }.getOrNull()
                 ?.mapNotNullTo(HashSet()) { SandboxCategory.fromId(it) } ?: return@produceState
             if (cats != SandboxCategory.entries.toSet()) value = PreviewSandboxPolicy(cats)
-        }
-        val renderer = remember(libraryExecutor, resources, sandbox) {
-            ComposePreviewRenderer(resources = resources, hooks = sandbox, libraryExecutor = libraryExecutor)
         }
         var renderError by remember(path, preview.variantId, text) { mutableStateOf<Throwable?>(null) }
         var partialError by remember(path, preview.variantId, text) { mutableStateOf<Throwable?>(null) }
@@ -228,33 +196,66 @@ class AndroidComposePreviewHost(private val backend: IdeServicesBackend) : Compo
                 locale?.let { setLocale(java.util.Locale.forLanguageTag(it.replace("-r", "-"))) }
             }
         }
+        // Preview process isolation (docs/compose-preview-isolation.md): when the toggle is on, render the
+        // @Preview in the :preview OS process and draw the streamed frame, so a runaway recomposition or crash
+        // pegs only :preview, not the IDE. Experimental — @PreviewParameter / locale previews stay in-process
+        // (the remote path doesn't cover them yet), and ANY remote failure (bind/open/render error, or no frame
+        // within the deadline) flips `useRemote` off so the in-process renderer takes over with no visible break.
+        val context = LocalContext.current
+        val remoteClient = remember { ComposePreviewRemoteClient.get(context) }
+        // Warm `:preview` the moment a preview mounts (when the isolation toggle is on): forking the process +
+        // binding the service is the single biggest first-open cost, so overlap it with lowering / resource
+        // resolution instead of paying it serially at openSession(). Idempotent — later mounts no-op.
+        LaunchedEffect(Unit) {
+            if (runCatching { backend.composePreviewIsolated() }.getOrDefault(false)) {
+                runCatching { withContext(Dispatchers.IO) { remoteClient.warmUp() } }
+            }
+        }
+        val remoteJars by produceState(emptyArray<String>(), path) {
+            value = runCatching { backend.composePreviewLibs(path)?.jars?.map { it.toString() }?.toTypedArray() }.getOrNull() ?: emptyArray()
+        }
+        // The module's res dirs + R namespace, so :preview rebuilds the resource repository itself (it can't
+        // receive the in-memory one) → `stringResource(R.string.x)`/`colorResource`/… resolve remotely too. The
+        // `.second` flag makes the remote render WAIT for this (else it opens with no resources and R.* fails).
+        val remoteResLoad by produceState(null as Pair<Array<String>, String>? to false, path) {
+            val roots = runCatching { backend.composePreviewResourceRoots(path) }.getOrNull()
+            value = roots?.let { it.resDirs.map { d -> d.toString() }.toTypedArray() to it.namespace } to true
+        }
+        val remoteRes = remoteResLoad.first
+        val remoteResReady = remoteResLoad.second
+        val remoteEligible by produceState(false, path, preview.variantId) {
+            value = runCatching { backend.composePreviewIsolated() }.getOrDefault(false) &&
+                !preview.hasParameter && preview.config.locale == null
+        }
+        var useRemote by remember(path, preview.variantId, remoteEligible) { mutableStateOf(remoteEligible) }
         CompositionLocalProvider(LocalConfiguration provides cfg) {
             Box(modifier, contentAlignment = Alignment.Center) {
                 when (val s = state) {
                     is PreviewState.Loading -> CircularProgressIndicator(Modifier.size(28.dp))
-                    // Wait for the resource load to settle before the first render, so `stringResource`/`R.*`
-                    // have their resolver (else the first pass fails "no resolver" and that error latches).
-                    is PreviewState.Ready -> if (!resourcesReady) CircularProgressIndicator(Modifier.size(28.dp)) else {
-                        // Key the capture on the error's identity, not the instance: the interpreter throws a
-                        // fresh Throwable each pass, so keying on it would relaunch + rewrite state every
-                        // recomposition → a render loop. Same message/type ⇒ same key ⇒ captured once.
-                        val onErr: @Composable (Throwable) -> Unit = { error ->
-                            LaunchedEffect(error.message, error::class) { renderError = error }
-                            PreviewRenderError(error)
+                    is PreviewState.Ready -> if (useRemote) {
+                        // Remote render: wait only for the remote res roots (`:preview` rebuilds its own resources)
+                        // — NOT the in-process resource parse, which the isolated path doesn't use.
+                        if (!remoteResReady) CircularProgressIndicator(Modifier.size(28.dp)) else {
+                            val widthPx = ((preview.config.widthDp ?: DEFAULT_PREVIEW_WIDTH_DP) * density).toInt().coerceIn(1, MAX_PREVIEW_PX)
+                            val heightPx = ((preview.config.heightDp ?: DEFAULT_PREVIEW_HEIGHT_DP) * density).toInt().coerceIn(1, MAX_PREVIEW_PX)
+                            RemoteComposePreview(
+                                client = remoteClient, lowered = s.lowered, jars = remoteJars,
+                                resRoots = remoteRes?.first ?: emptyArray(), namespace = remoteRes?.second ?: "",
+                                widthPx = widthPx, heightPx = heightPx, density = density, night = night,
+                                onUnavailable = { useRemote = false }, modifier = Modifier.fillMaxWidth(),
+                            )
                         }
-                        val onPartial: (Throwable?) -> Unit = { e ->
-                            val key = e?.let { "${it::class.java.name}: ${it.message}" }
-                            if (key != partialKey[0]) {
-                                partialKey[0] = key
-                                if (e != null) log.warn("Compose preview partial render", e)
-                                partialError = e
-                            }
-                            // Drain the sandbox's blocked-call findings after each pass (same cadence as the
-                            // partial-error drain); the state write no-ops when the list is unchanged.
-                            val fs = sandbox.findings()
-                            if (fs != sandboxFindings) sandboxFindings = fs
-                        }
-                        PreviewVariants(renderer, s.lowered, onErr, onPartial)
+                    } else {
+                        // In-process render (isolation off, or a remote failure fell back here): this composable
+                        // builds the VM executor + resource resolver on demand, so that heavy work never runs on
+                        // the isolated path. Its render outcomes flow up to the hoisted state → the shared chip.
+                        InProcessComposePreview(
+                            backend = backend, path = path, lowered = s.lowered, night = night, density = density,
+                            sandbox = sandbox, partialKey = partialKey,
+                            onRenderError = { renderError = it },
+                            onPartialError = { partialError = it },
+                            onSandboxFindings = { if (it != sandboxFindings) sandboxFindings = it },
+                        )
                     }
                     is PreviewState.NotInterpretable -> Text(
                         "Preview not interpretable", color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -361,6 +362,216 @@ class AndroidComposePreviewHost(private val backend: IdeServicesBackend) : Compo
         object Loading : PreviewState
         data class Ready(val lowered: LoweredComposePreview) : PreviewState
         data class NotInterpretable(val reasons: List<String>) : PreviewState
+    }
+}
+
+/**
+ * The in-process Compose preview renderer — the FALLBACK path, used when the isolation toggle is off or a
+ * `:preview` render failed. It builds the bytecode-VM library executor (over the module's jars) and the project
+ * resource resolver ON DEMAND (so the isolated path never pays to open every jar or parse all res XML), then
+ * interprets [lowered] via [ComposePreviewRenderer] into the IDE's own composition. Render outcomes are reported
+ * up through [onRenderError] / [onPartialError] / [onSandboxFindings] so the host's shared problem chip reflects
+ * them. Because this composable only enters composition on the fallback branch, none of its produceState work
+ * runs while an isolated preview is on screen.
+ */
+@Composable
+private fun InProcessComposePreview(
+    backend: IdeServicesBackend,
+    path: String,
+    lowered: LoweredComposePreview,
+    night: Boolean,
+    density: Float,
+    sandbox: PreviewSandboxPolicy,
+    partialKey: Array<String?>,
+    onRenderError: (Throwable) -> Unit,
+    onPartialError: (Throwable?) -> Unit,
+    onSandboxFindings: (List<SandboxFinding>) -> Unit,
+) {
+    // The project's library closure executes in the bytecode VM: dependency classes are read straight from the
+    // resolved jars and interpreted (bridged to the IDE's bundled runtime), so downloaded code never reaches a
+    // ClassLoader. Null while the jar list resolves / on failure → the renderer falls back to bundled Compose.
+    val libraryExecutor by produceState<VmLibraryExecutor?>(null, path) {
+        value = runCatching {
+            backend.composePreviewLibs(path)?.let { libs ->
+                // Disk-backed peer-dex cache (workspace-wide): a rebuilt executor reuses previously-dexed peers
+                // instead of re-running D8 (~0.4s → ~40ms per open; see DexPeerFactory).
+                val peerDexCache = runCatching { libs.cacheDir.resolveSibling("vm-peer-dex") }.getOrNull()
+                withContext(Dispatchers.IO) {
+                    // Guard the peer proxies: an interpreted object realized as a real interface can have its
+                    // methods invoked by platform code OUTSIDE the render's error boundary; the sink degrades a
+                    // failure there to a skipped call instead of crashing the app.
+                    VmLibraryExecutor(
+                        libs.jars,
+                        peerFactory = DexPeerFactory(peerDexCache, proxyExceptionSink = { t ->
+                            inProcessLog.warn("interpreted preview peer call failed (skipped): ${t.message ?: t.javaClass.simpleName}")
+                        }),
+                    )
+                }
+            }
+        }.getOrNull()
+    }
+    // Close the executor's jar handles when it is replaced or leaves composition (produceState never disposes a
+    // superseded value; the local capture closes THIS executor, not whatever the state holds later).
+    DisposableEffect(libraryExecutor) {
+        val exec = libraryExecutor
+        onDispose { exec?.close() }
+    }
+    // Project resources with the previewed density + night baked in, so stringResource/colorResource/R.* resolve
+    // against the project. `.first` = resolver (null for a non-Android module); `.second` = load settled — the
+    // render waits for it, else the first pass fails "no resolver" and that error latches.
+    val resLoad by produceState(null as PreviewResourceResolver? to false, path, night, density) {
+        val resolver = runCatching {
+            val res = backend.composePreviewResources(path)
+            if (res == null) inProcessLog.warn("no preview resources for $path — R.string/colorResource/… won't resolve")
+            res?.let { withContext(Dispatchers.IO) { AndroidPreviewResources(it.repo, it.namespace, density, night) } }
+        }.onFailure { inProcessLog.warn("building preview resources for $path failed: ${it.javaClass.name}: ${it.message}", it) }.getOrNull()
+        value = resolver to true
+    }
+    val resources = resLoad.first
+    val resourcesReady = resLoad.second
+    val renderer = remember(libraryExecutor, resources, sandbox) {
+        ComposePreviewRenderer(resources = resources, hooks = sandbox, libraryExecutor = libraryExecutor)
+    }
+    // Wait for the resource load to settle before the first render, so stringResource/R.* have their resolver.
+    if (!resourcesReady) {
+        CircularProgressIndicator(Modifier.size(28.dp))
+        return
+    }
+    // Key the error capture on the error's identity, not the instance: the interpreter throws a fresh Throwable
+    // each pass, so keying on it would relaunch + rewrite state every recomposition → a render loop.
+    val onErr: @Composable (Throwable) -> Unit = { error ->
+        LaunchedEffect(error.message, error::class) { onRenderError(error) }
+        PreviewRenderError(error)
+    }
+    val onPartial: (Throwable?) -> Unit = { e ->
+        val key = e?.let { "${it::class.java.name}: ${it.message}" }
+        if (key != partialKey[0]) {
+            partialKey[0] = key
+            if (e != null) inProcessLog.warn("Compose preview partial render", e)
+            onPartialError(e)
+        }
+        // Drain the sandbox's blocked-call findings after each pass; the hoisted write no-ops when unchanged.
+        onSandboxFindings(sandbox.findings())
+    }
+    PreviewVariants(renderer, lowered, onErr, onPartial)
+}
+
+/**
+ * Draw a preview rendered OUT-OF-PROCESS: open a [ComposePreviewRemoteClient] session for [lowered], stream its
+ * frames, and draw the latest as a bitmap scaled to the pane width. A live edit ([lowered] change) is pushed to
+ * the running session ([ComposePreviewRemoteClient.Session.update], so remembered state survives). Any failure —
+ * the session won't open, the render errors, or no frame arrives within [REMOTE_FIRST_FRAME_TIMEOUT_MS] — calls
+ * [onUnavailable] so the host falls back to the in-process renderer with no visible break. The `:preview` bind
+ * can block, so the session is opened on a background thread; Binder-callback state writes are posted to main.
+ */
+@OptIn(ExperimentalComposeUiApi::class)
+@Composable
+private fun RemoteComposePreview(
+    client: ComposePreviewRemoteClient,
+    lowered: LoweredComposePreview,
+    jars: Array<String>,
+    resRoots: Array<String>,
+    namespace: String,
+    widthPx: Int,
+    heightPx: Int,
+    density: Float,
+    night: Boolean,
+    onUnavailable: () -> Unit,
+    modifier: Modifier,
+) {
+    val main = remember { Handler(Looper.getMainLooper()) }
+    // A new session is needed only when the classpath or resource roots change (they drive `:preview`'s executor +
+    // resource rebuild). Size / night are pushed to the LIVE session via resize() instead, so they must NOT re-key
+    // the session/frame state — that would tear the session down and flash a spinner. Keeping the last frame
+    // across a night/size change draws it (scaled) until the re-rendered one streams in.
+    val cpKey = jars.joinToString("\n")
+    val resKey = resRoots.joinToString("\n")
+    var frame by remember(client, cpKey, resKey, namespace) { mutableStateOf<Bitmap?>(null) }
+    // Hold the Session in a plain box, NOT a mutableStateOf<Session> — a Compose-tracked field of our own type
+    // makes the compiler emit a `Session.$stable` read, which crashes (NoSuchFieldError) if that class wasn't
+    // instrumented. An Int epoch (bumped when the session opens/closes) drives the effects instead.
+    val sessionBox = remember(client, cpKey, resKey, namespace) { arrayOfNulls<ComposePreviewRemoteClient.Session>(1) }
+    var sessionEpoch by remember(client, cpKey, resKey, namespace) { mutableIntStateOf(0) }
+    val fallback by rememberUpdatedState(onUnavailable)
+    val openLowered by rememberUpdatedState(lowered)
+
+    // Open the session off the main thread (the :preview bind can block) and stream frames in; re-open ONLY on a
+    // classpath / resource change — NOT on a program edit (→ update()) or a size/night change (→ resize()).
+    DisposableEffect(client, cpKey, resKey, namespace) {
+        var disposed = false
+        val sink = object : ComposePreviewRemoteClient.FrameSink {
+            override fun onFrame(bitmap: Bitmap, seq: Long) { main.post { frame = bitmap } }
+            override fun onError(message: String) { main.post { fallback() } }
+        }
+        Thread {
+            val s = client.openSession(openLowered, widthPx, heightPx, density, night, sink, jars, resRoots, namespace)
+            main.post {
+                if (disposed) { s?.close() }
+                else { sessionBox[0] = s; sessionEpoch++; if (s == null) fallback() }
+            }
+        }.apply { isDaemon = true; name = "compose-preview-open"; start() }
+        onDispose { disposed = true; sessionBox[0]?.close(); sessionBox[0] = null }
+    }
+    // Live edit: push the re-lowered program to the running session (off main — update makes a Binder call).
+    LaunchedEffect(sessionEpoch, lowered) {
+        val s = sessionBox[0] ?: return@LaunchedEffect
+        withContext(Dispatchers.IO) { s.update(lowered) }
+    }
+    // Size / night change: re-target the LIVE session instead of re-opening (a night toggle re-renders on the same
+    // off-screen surface; a size change recreates it in `:preview`). oneway, so hop off main. Also fires right
+    // after each open with the opened values — a harmless no-op in `:preview` when nothing actually changed.
+    LaunchedEffect(sessionEpoch, widthPx, heightPx, density, night) {
+        val s = sessionBox[0] ?: return@LaunchedEffect
+        withContext(Dispatchers.IO) { s.resize(widthPx, heightPx, density, night) }
+    }
+    // First-frame watchdog: no frame within the deadline → fall back in-process.
+    LaunchedEffect(sessionEpoch) {
+        if (sessionBox[0] != null) { delay(REMOTE_FIRST_FRAME_TIMEOUT_MS); if (frame == null) fallback() }
+    }
+
+    val bmp = frame
+    Box(modifier, contentAlignment = Alignment.Center) {
+        if (bmp != null) {
+            // The frame is drawn scaled to the pane width (ContentScale.FillWidth = uniform scale). Forward each
+            // pointer event to the remote session, mapping the tap from displayed pixels back to the off-screen
+            // canvas' pixels (canvasPx = displayPx * bitmapWidth / displayedWidth). Single-pointer (tap/scroll/
+            // drag); multi-touch is a follow-up.
+            var displayWidth by remember { mutableStateOf(0) }
+            val focusRequester = remember { FocusRequester() }
+            Image(
+                bitmap = bmp.asImageBitmap(),
+                contentDescription = null,
+                contentScale = ContentScale.FillWidth,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .onSizeChanged { displayWidth = it.width }
+                    .focusRequester(focusRequester)
+                    .focusable()
+                    // Forward key events (hardware keyboard, nav/shortcut keys, onKeyEvent handlers) to the focused
+                    // preview. Don't swallow BACK, so the user can still navigate out. Soft-keyboard TEXT entry
+                    // (commitText) is a separate IME bridge — see docs.
+                    .onPreviewKeyEvent { ev ->
+                        val s = sessionBox[0]
+                        val ke = ev.nativeKeyEvent
+                        if (s != null && ke.keyCode != AndroidKeyEvent.KEYCODE_BACK) {
+                            s.dispatchKey(ke.action, ke.keyCode, ke.metaState, ke.eventTime)
+                            true
+                        } else false
+                    }
+                    .pointerInteropFilter { ev ->
+                        val s = sessionBox[0]
+                        if (s != null && displayWidth > 0) {
+                            // Tap focuses the preview so keyboard/nav keys route to it (tap elsewhere to leave).
+                            if (ev.actionMasked == AndroidMotionEvent.ACTION_DOWN) runCatching { focusRequester.requestFocus() }
+                            val scale = bmp.width.toFloat() / displayWidth
+                            s.dispatchInput(ev.actionMasked, ev.x * scale, ev.y * scale, ev.getPointerId(0), ev.eventTime)
+                        }
+                        true
+                    },
+            )
+        } else {
+            CircularProgressIndicator(Modifier.size(28.dp))
+        }
     }
 }
 
