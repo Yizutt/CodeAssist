@@ -19,6 +19,8 @@ data class IdeSettings(
     val themeMode: String = THEME_DARK,
     /** [ACCENT_VIOLET], [ACCENT_TEAL], or [ACCENT_ORANGE] (the accent swaps the theme ships). */
     val accent: String = ACCENT_VIOLET,
+    /** App-language override ("" = follow system locale, or a language code like "en"/"zh"/"pt-BR"). */
+    val appLocale: String = "",
 
     // ---- editor ----
     /** Code-font zoom, 1.0 = the theme's default size (also driven live by pinch / Ctrl-+ / Ctrl--). */

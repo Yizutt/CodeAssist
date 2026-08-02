@@ -15,6 +15,8 @@ import dev.ide.platform.settings.SettingsScope
  */
 object BuiltInSettingsPages {
     const val APPEARANCE = "appearance"
+    /** Choice key on [APPEARANCE]: app language override. "" = follow system. */
+    const val APP_LOCALE = "appLocale"
     const val EDITOR = "editor"
     const val COMPLETION = "completion"
     const val ANALYSIS = "analysis"
@@ -133,6 +135,16 @@ object BuiltInSettingsPages {
                     SettingControl.Choice.Option(IdeSettings.ACCENT_TEAL, "Teal"),
                     SettingControl.Choice.Option(IdeSettings.ACCENT_ORANGE, "Orange (Legacy)"),
                 ),
+            ),
+            SettingControl.Choice(
+                APP_LOCALE, "Language", "Override the app language (default = follow system)",
+                default = d.appLocale,
+                options = buildList {
+                    add(SettingControl.Choice.Option("", "System default"))
+                    dev.ide.ui.i18n.LocaleManager.available().forEach { (code, native, _) ->
+                        if (code.isNotBlank()) add(SettingControl.Choice.Option(code, native))
+                    }
+                },
             ),
         )
     }

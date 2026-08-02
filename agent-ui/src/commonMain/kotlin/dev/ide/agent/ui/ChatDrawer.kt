@@ -714,9 +714,9 @@ private fun Int.tok(): String = when {
 
 @Composable
 private fun modeLabel(mode: UiAgentPermissionMode): String = when (mode) {
-    UiAgentPermissionMode.ASK_EACH -> stringResource(Res.string.chat_mode_ask)
-    UiAgentPermissionMode.AUTO_ACCEPT -> stringResource(Res.string.chat_mode_auto)
-    UiAgentPermissionMode.PLAN_ONLY -> stringResource(Res.string.chat_mode_plan)
+    UiAgentPermissionMode.ASK_EACH -> rememberLocalized("ai_mode_ask")
+    UiAgentPermissionMode.AUTO_ACCEPT -> rememberLocalized("ai_mode_auto")
+    UiAgentPermissionMode.PLAN_ONLY -> rememberLocalized("ai_mode_plan")
 }
 
 private fun nextMode(mode: UiAgentPermissionMode): UiAgentPermissionMode = when (mode) {

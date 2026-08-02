@@ -60,7 +60,7 @@ internal class AgentBackend(private val ctx: BackendContext) : AgentService {
 
     // Wire up the language system's persistence to the settings backend.
     init {
-        dev.ide.ui.i18n.Lang.init(
+        dev.ide.ui.i18n.LocaleManager.init(
             read = { key -> ctx.manager?.preference(key) },
             write = { key, value -> ctx.manager?.setPreference(key, value) },
         )

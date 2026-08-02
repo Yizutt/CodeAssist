@@ -97,6 +97,10 @@ internal class SettingsBackend(private val ctx: BackendContext) : SettingsServic
         val fullKey = settingKey(pageId, key)
         if (page.scope == SettingsScope.PROJECT) ctx.servicesOrNull?.setProjectPref(fullKey, value)
         else ctx.manager?.setPreference(fullKey, value)
+        // Keep LocaleManager in sync when the user changes the language override.
+        if (pageId == BuiltInSettingsPages.APPEARANCE && key == BuiltInSettingsPages.APP_LOCALE) {
+            dev.ide.ui.i18n.LocaleManager.setOverride(value.takeIf { it.isNotBlank() })
+        }
         applyAfterChange(page, key)
     }
 

@@ -26,6 +26,7 @@ class SettingsStore(
         return IdeSettings(
             themeMode = oneOf("appearance.themeMode", d.themeMode, IdeSettings.THEME_LIGHT, IdeSettings.THEME_DARK, IdeSettings.THEME_SYSTEM),
             accent = oneOf("appearance.accent", d.accent, IdeSettings.ACCENT_VIOLET, IdeSettings.ACCENT_TEAL, IdeSettings.ACCENT_ORANGE),
+            appLocale = opt("appearance.appLocale", d.appLocale),
             // Stored as an integer percent (100 = 1.0×) so the generic IntSlider and this typed view agree.
             editorFontScale = (int("editor.fontScale", (d.editorFontScale * 100).toInt()) / 100f).coerceIn(MIN_FONT_SCALE, MAX_FONT_SCALE),
             codeFont = oneOf("editor.codeFont", d.codeFont, IdeSettings.CODE_FONT_JETBRAINS, IdeSettings.CODE_FONT_MONOSPACE),
@@ -150,6 +151,12 @@ class SettingsStore(
     private fun key(k: String) = "$KEY_PREFIX$k"
     private fun put(k: String, v: String) = set(key(k), v)
     /** A string value constrained to [allowed]; an unknown/absent value falls back to [def]. */
+    /** Read an optional string preference, returning [def] when absent/blank. */
+    private fun opt(k: String, def: String): String {
+        val v = get(key(k))?.trim()
+        return if (v.isNullOrEmpty()) def else v
+    }
+
     private fun oneOf(k: String, def: String, vararg allowed: String): String =
         get(key(k))?.takeIf { it in allowed } ?: def
     private fun bool(k: String, def: Boolean) = get(key(k))?.toBooleanStrictOrNull() ?: def
