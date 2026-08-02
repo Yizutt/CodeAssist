@@ -63,6 +63,7 @@ import kotlinx.coroutines.withContext
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 import java.nio.file.Paths
+import java.io.File
 
 /**
  * Implements the UI's [IdeBackend] port over the JVM [IdeServices] facade.

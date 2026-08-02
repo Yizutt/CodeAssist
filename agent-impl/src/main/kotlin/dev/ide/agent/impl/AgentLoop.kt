@@ -128,7 +128,7 @@ class AgentLoop(
         ?: "New conversation"
 
     /** Timestamp for createdAt if the session is brand new (no persisted record yet). */
-    private fun createdAt(): Long = System.currentTimeMillis()()
+    private fun createdAt(): Long = System.currentTimeMillis()
 
     /**
      * Runs the turn's tool calls, preserving their order in the returned results. Read-only calls run

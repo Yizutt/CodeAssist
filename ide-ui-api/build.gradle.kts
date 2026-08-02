@@ -30,6 +30,7 @@ kotlin {
 
     sourceSets {
         commonMain.dependencies {
+            api(project(":agent-api"))
             implementation(compose.runtime)
             implementation(compose.foundation)
             implementation(compose.ui)

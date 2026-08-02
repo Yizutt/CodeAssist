@@ -106,7 +106,7 @@ private fun SessionRow(
         Modifier
             .fillMaxWidth()
             .padding(horizontal = 8.dp, vertical = 2.dp)
-            .clip(RoundedCornerShape(Ca.radius.card))
+            .clip(RoundedCornerShape(Ca.radius.lg))
             .background(bg)
             .clickable(onClick = onClick)
             .padding(horizontal = 12.dp, vertical = 10.dp),

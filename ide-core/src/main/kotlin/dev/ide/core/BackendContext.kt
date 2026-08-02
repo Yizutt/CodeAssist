@@ -4,6 +4,7 @@ import dev.ide.ui.backend.IdeBackend
 import dev.ide.ui.backend.UiError
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.flow.StateFlow
+import java.io.File
 
 /**
  * The shared engine-adapter core the per-service backend impl classes (Stage 2 of the [IdeBackend]
