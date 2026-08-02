@@ -24,6 +24,7 @@ import dev.ide.ui.backend.UiAgentPermissionMode
 import dev.ide.ui.backend.UiAgentPermissionRequest
 import dev.ide.ui.backend.UiAgentProvider
 import dev.ide.ui.backend.UiAgentRole
+import dev.ide.ui.backend.UiAgentTokenUsage
 import dev.ide.ui.backend.UiAgentToolCall
 import dev.ide.ui.backend.UiAgentToolStatus
 import dev.ide.ui.backend.UiAntigravitySignIn
@@ -142,20 +143,9 @@ internal class AgentBackend(private val ctx: BackendContext) : AgentService {
 
     // --- export / import -------------------------------------------------------------------------
 
-    /** Export the given session (or the current one) to [target]. Returns true on success. */
-    fun exportSession(id: String?, target: java.io.File): Boolean {
-        val session = if (id != null) sessionStore.load(id) else loop?.let {
-            val sId = currentSessionId ?: return false
-            dev.ide.agent.AgentSession(
-                id = sId,
-                title = "Export",
-                createdAt = System.currentTimeMillis(),
-                updatedAt = System.currentTimeMillis(),
-                provider = resolveConfig().selectedId,
-                model = "",
-                messages = emptyList(),
-            )
-        } ?: return false
+    /** Export the given session to [target]. Returns true on success. */
+    fun exportSession(id: String, target: java.io.File): Boolean {
+        val session = sessionStore.load(id) ?: return false
         return runCatching { sessionStore.export(session, target) }.isSuccess
     }
 
