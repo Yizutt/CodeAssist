@@ -9,6 +9,7 @@ import dev.ide.agent.ContentPart
 import dev.ide.agent.LlmClient
 import dev.ide.agent.LlmMessage
 import dev.ide.agent.LlmRequest
+import dev.ide.agent.LlmRole
 import dev.ide.agent.LlmStreamEvent
 import dev.ide.agent.PermissionMode
 import dev.ide.agent.StopReason
