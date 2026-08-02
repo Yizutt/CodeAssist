@@ -85,10 +85,15 @@ internal class AgentBackend(private val ctx: BackendContext) : AgentService {
         job?.cancel()
         val cfg = resolveConfig()
         val provider = registry.provider(cfg.clientProviderId) ?: return
+        val apiKey = cfg.apiKey
+        if (apiKey.isNullOrBlank()) {
+            appendError("Add an API key to resume this session. Tap the key icon to manage providers.")
+            return
+        }
         val maxIterations = prefInt("maxIterations") ?: DEFAULT_MAX_ITERATIONS
         val maxTokens = prefInt("maxTokens") ?: DEFAULT_MAX_TOKENS
         val thinkingBudget = prefInt("thinkingBudget")
-        val client = provider.client(ProviderConfig(cfg.apiKey, cfg.baseUrl))
+        val client = provider.client(ProviderConfig(apiKey, cfg.baseUrl))
         loop = AgentLoop.fromHistory(
             session, client, tools, gate, ::systemPrompt,
             store = sessionStore,
