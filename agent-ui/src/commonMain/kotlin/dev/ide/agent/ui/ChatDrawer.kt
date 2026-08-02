@@ -245,11 +245,11 @@ private fun ChatHeader(
         Box {
             IconButtonCa(CaIcons.globe, "Language", { showLang = true }, iconSize = 16, boxSize = 30)
             CaDropdownMenu(expanded = showLang, onDismissRequest = { showLang = false }) {
-                dev.ide.ui.i18n.Lang.available().forEach { (code, name) ->
+                dev.ide.ui.i18n.LocaleManager.available().forEach { (code, name, _) ->
                     DropdownMenuItem(
-                        text = { Text(name, color = if (code == dev.ide.ui.i18n.Lang.get()) Ca.colors.accent else Ca.colors.textPrimary) },
+                        text = { Text(name, color = if (code == dev.ide.ui.i18n.LocaleManager.current) Ca.colors.accent else Ca.colors.textPrimary) },
                         onClick = {
-                            dev.ide.ui.i18n.Lang.set(code)
+                            dev.ide.ui.i18n.LocaleManager.setOverride(code.takeIf { it.isNotBlank() })
                             showLang = false
                             langVersion++
                         },
