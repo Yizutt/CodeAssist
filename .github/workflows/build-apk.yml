@@ -11,11 +11,14 @@ concurrency:
   group: apk-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  CI_CORE_ONLY: "false"
+
 jobs:
   build-apk:
     name: Build debug APK
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -30,11 +33,10 @@ jobs:
         uses: android-actions/setup-android@v3
         with:
           accept-android-sdk-licenses: true
-          cmake-version: "3.22.1"
 
       - name: Install Android SDK components
         run: |
-          sdkmanager "platforms;android-36" "build-tools;35.0.1" "platform-tools"
+          sdkmanager "platforms;android-36" "build-tools;36.0.0" "platform-tools"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
