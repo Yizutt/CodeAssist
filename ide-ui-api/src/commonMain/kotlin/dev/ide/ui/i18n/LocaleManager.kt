@@ -30,17 +30,16 @@ object LocaleManager {
         prefsWrite(PREF_KEY, override ?: "")
     }
 
-    /** All locales the app ships translations for, with a self-name for the picker. */
+    /** All locales the app ships translations for: (code, native name, english name). */
     fun available(): List<Triple<String, String, String>> = listOf(
-        // code, native name, english name
-        ("", "System default", "System default"),
-        ("en", "English", "English"),
-        ("zh", "中文", "Chinese"),
-        ("ar", "العربية", "Arabic"),
-        ("es", "Español", "Spanish"),
-        ("in", "Bahasa Indonesia", "Indonesian"),
-        ("pt-BR", "Português (Brasil)", "Portuguese (Brazil)"),
-        ("ru", "Русский", "Russian"),
+        Triple("", "System default", "System default"),
+        Triple("en", "English", "English"),
+        Triple("zh", "中文", "Chinese"),
+        Triple("ar", "العربية", "Arabic"),
+        Triple("es", "Español", "Spanish"),
+        Triple("in", "Bahasa Indonesia", "Indonesian"),
+        Triple("pt-BR", "Português (Brasil)", "Portuguese (Brazil)"),
+        Triple("ru", "Русский", "Russian"),
     )
 }
 
