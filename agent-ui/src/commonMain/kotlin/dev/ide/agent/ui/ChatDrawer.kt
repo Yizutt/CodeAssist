@@ -65,6 +65,7 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import kotlinx.coroutines.delay
 import dev.ide.ui.backend.IdeBackend
+import dev.ide.ui.backend.UiAgentChatState
 import dev.ide.ui.backend.UiAgentConfig
 import dev.ide.ui.backend.UiAgentMessage
 import dev.ide.ui.backend.UiAgentModel
