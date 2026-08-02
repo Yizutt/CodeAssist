@@ -668,6 +668,7 @@ private fun Int.tok(): String = when {
     else -> toString()
 }
 
+@Composable
 private fun modeLabel(mode: UiAgentPermissionMode): String = when (mode) {
     UiAgentPermissionMode.ASK_EACH -> stringResource(Res.string.chat_mode_ask)
     UiAgentPermissionMode.AUTO_ACCEPT -> stringResource(Res.string.chat_mode_auto)
