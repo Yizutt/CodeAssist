@@ -73,6 +73,7 @@ import dev.ide.ui.backend.UiAgentPermissionMode
 import dev.ide.ui.backend.UiAgentRole
 import dev.ide.ui.backend.UiAgentToolCall
 import dev.ide.ui.backend.UiAgentToolStatus
+import dev.ide.ui.i18n.rememberLocalized
 import dev.ide.agent.ui.generated.resources.Res
 import dev.ide.agent.ui.generated.resources.chat_add_key
 import dev.ide.agent.ui.generated.resources.chat_close
