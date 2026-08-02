@@ -214,26 +214,49 @@ private fun ChatHeader(
             fill = Ca.colors.accentSoft,
             textColor = Ca.colors.accent,
         )
-        // Tool iterations: cycle OFF (0) → LIMITED (24) → UNLIMITED (-1).
+        // Tool iterations: tap to pick a value directly.
+        var showIterMenu by remember { mutableStateOf(false) }
         val maxIter = backend.agent.maxIterations()
         val iterLabel = when {
             maxIter == 0 -> "Tools OFF"
             maxIter < 0 -> "∞ tools"
             else -> "$maxIter tools"
         }
-        Chip(
-            text = iterLabel,
-            modifier = Modifier.clip(RoundedCornerShape(Ca.radius.pill)).clickable {
-                val next = when {
-                    maxIter == 0 -> 24      // OFF → default limited
-                    maxIter < 0 -> 0       // unlimited → OFF
-                    else -> -1              // limited → unlimited
+        Box {
+            Chip(
+                text = iterLabel,
+                modifier = Modifier.clip(RoundedCornerShape(Ca.radius.pill)).clickable { showIterMenu = true },
+                fill = Ca.colors.accentSoft,
+                textColor = Ca.colors.accent,
+            )
+            CaDropdownMenu(expanded = showIterMenu, onDismissRequest = { showIterMenu = false }) {
+                iterOption("Tools OFF", 0, maxIter, backend) { showIterMenu = false }
+                iterOption("5 rounds", 5, maxIter, backend) { showIterMenu = false }
+                iterOption("10 rounds", 10, maxIter, backend) { showIterMenu = false }
+                iterOption("24 rounds", 24, maxIter, backend) { showIterMenu = false }
+                iterOption("Unlimited", -1, maxIter, backend) { showIterMenu = false }
+            }
+        }
+        // Language selector.
+        var showLang by remember { mutableStateOf(false) }
+        // Bump this to force recomposition after a language change.
+        var langVersion by remember { mutableStateOf(0) }
+        LaunchedEffect(langVersion) { /* recompose on lang change */ }
+        Box {
+            IconButtonCa(CaIcons.globe, "Language", { showLang = true }, iconSize = 16, boxSize = 30)
+            CaDropdownMenu(expanded = showLang, onDismissRequest = { showLang = false }) {
+                dev.ide.ui.i18n.Lang.available().forEach { (code, name) ->
+                    DropdownMenuItem(
+                        text = { Text(name, color = if (code == dev.ide.ui.i18n.Lang.get()) Ca.colors.accent else Ca.colors.textPrimary) },
+                        onClick = {
+                            dev.ide.ui.i18n.Lang.set(code)
+                            showLang = false
+                            langVersion++
+                        },
+                    )
                 }
-                backend.agent.setMaxIterations(next)
-            },
-            fill = Ca.colors.accentSoft,
-            textColor = Ca.colors.accent,
-        )
+            }
+        }
         IconButtonCa(CaIcons.clock, "History", onShowHistory, iconSize = 16, boxSize = 30)
         IconButtonCa(CaIcons.key, stringResource(Res.string.chat_manage_keys), onManage, iconSize = 16, boxSize = 30)
         IconButtonCa(CaIcons.refresh, stringResource(Res.string.chat_new), onNew, iconSize = 16, boxSize = 30)
@@ -662,6 +685,23 @@ private fun SparkleBadge(size: Int, animated: Boolean = false) {
     ) {
         Icon(CaIcons.sparkle, null, Modifier.size((size * 0.6f).dp).scale(scale), tint = Ca.colors.textOnAccent)
     }
+}
+
+@Composable
+private fun iterOption(label: String, value: Int, current: Int, backend: IdeBackend, onSelect: () -> Unit) {
+    DropdownMenuItem(
+        text = {
+            Text(
+                label,
+                color = if (value == current) Ca.colors.accent else Ca.colors.textPrimary,
+                fontWeight = if (value == current) FontWeight.SemiBold else FontWeight.Normal,
+            )
+        },
+        onClick = {
+            backend.agent.setMaxIterations(value)
+            onSelect()
+        },
+    )
 }
 
 @Composable

@@ -58,6 +58,14 @@ internal class AgentBackend(private val ctx: BackendContext) : AgentService {
     private val tools = SimpleToolRegistry(builtinTools(workspace))
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
+    // Wire up the language system's persistence to the settings backend.
+    init {
+        dev.ide.ui.i18n.Lang.init(
+            read = { key -> ctx.manager?.preference(key) },
+            write = { key, value -> ctx.manager?.setPreference(key, value) },
+        )
+    }
+
     private val _chatState = MutableStateFlow(UiAgentChatState())
     override val chatState: StateFlow<UiAgentChatState> = _chatState.asStateFlow()
 
@@ -574,10 +582,12 @@ internal class AgentBackend(private val ctx: BackendContext) : AgentService {
         UiAgentPermissionMode.PLAN_ONLY -> PermissionMode.PLAN_ONLY
     }
 
-    /** Set the tool-iteration cap. -1 = unlimited, 0 = tools off, >0 = that many rounds. Persisted + rebuilds the loop. */
+    /** Set the tool-iteration cap. -1 = unlimited, 0 = tools off, >0 = that many rounds. Persisted; loop rebuilds lazily on next send. */
     override fun setMaxIterations(value: Int) {
         ctx.manager?.setPreference("settings.$AI_PAGE.maxIterations", value.toString())
-        resetLoop()
+        // Invalidate the cached signature so the next send rebuilds the loop with the new cap,
+        // but do NOT cancel an in-flight run or tear down the loop mid-stream.
+        loopSignature = null
     }
 
     override fun maxIterations(): Int = prefInt("maxIterations") ?: DEFAULT_MAX_ITERATIONS
