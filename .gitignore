@@ -18,7 +18,8 @@
 local.properties
 
 # Release signing — never commit
-keystore/
+keystore/*
+!keystore/codeassist-debug.jks
 keystore.properties
 
 # Antigravity OAuth client — injected into :agent-impl at build time, never commit

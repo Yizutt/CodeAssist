@@ -393,6 +393,17 @@ android {
     // the release build is left unsigned — fine for Play, which re-signs with the managed app key (you
     // upload an AAB signed with your upload key). See keystore.properties.example.
     signingConfigs {
+        // Fixed debug key so APK updates don't require uninstall (the IDE-injected Gradle user home in CI
+        // regenerates the default debug key every run; this one is committed and stable).
+        create("fixedDebug") {
+            val debugKeystore = rootProject.file("keystore/codeassist-debug.jks")
+            if (debugKeystore.exists()) {
+                storeFile = debugKeystore
+                storePassword = "<REDACTED>
+                keyAlias = "codeassist-debug"
+                keyPassword = "<REDACTED>
+            }
+        }
         val keystoreProps = Properties().apply {
             val f = rootProject.file("keystore.properties")
             if (f.exists()) f.inputStream().use { load(it) }
@@ -415,6 +426,10 @@ android {
     }
 
     buildTypes {
+        getByName("debug") {
+            // Use the fixed debug keystore so repeated installs don't require uninstall first.
+            signingConfig = signingConfigs.findByName("fixedDebug")
+        }
         getByName("release") {
             // R8 is OFF: the app loads JDT/ecj/D8/apksig classes reflectively and dexes user code at
             // runtime, so aggressive shrinking would strip needed classes. Revisit with keep rules if
