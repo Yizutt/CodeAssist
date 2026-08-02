@@ -118,6 +118,7 @@ fun ChatDrawer(backend: IdeBackend, onClose: (() -> Unit)? = null, modifier: Mod
     Box(modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize()) {
             ChatHeader(
+                backend = backend,
                 cfg = cfg,
                 chat = chat,
                 models = models.ifEmpty { cfg.providers.firstOrNull { it.id == cfg.selectedProvider }?.models ?: emptyList() },
@@ -173,6 +174,7 @@ fun ChatDrawer(backend: IdeBackend, onClose: (() -> Unit)? = null, modifier: Mod
 
 @Composable
 private fun ChatHeader(
+    backend: IdeBackend,
     cfg: UiAgentConfig,
     chat: UiAgentChatState,
     models: List<UiAgentModel>,
