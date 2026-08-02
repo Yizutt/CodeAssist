@@ -395,13 +395,18 @@ android {
     signingConfigs {
         // Fixed debug key so APK updates don't require uninstall (the IDE-injected Gradle user home in CI
         // regenerates the default debug key every run; this one is committed and stable).
+        // Credentials live in keystore/debug-keystore.properties (committed, non-secret debug key).
         create("fixedDebug") {
             val debugKeystore = rootProject.file("keystore/codeassist-debug.jks")
+            val debugProps = Properties().apply {
+                rootProject.file("keystore/debug-keystore.properties")
+                    .takeIf { it.exists() }?.inputStream()?.use { load(it) }
+            }
             if (debugKeystore.exists()) {
                 storeFile = debugKeystore
-                storePassword = "<REDACTED>
-                keyAlias = "codeassist-debug"
-                keyPassword = "<REDACTED>
+                storePassword = debugProps.getProperty("storePassword", "codeassist")
+                keyAlias = debugProps.getProperty("keyAlias", "codeassist-debug")
+                keyPassword = debugProps.getProperty("keyPassword", "codeassist")
             }
         }
         val keystoreProps = Properties().apply {
