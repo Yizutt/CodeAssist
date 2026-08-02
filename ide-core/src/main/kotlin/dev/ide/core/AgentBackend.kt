@@ -575,12 +575,12 @@ internal class AgentBackend(private val ctx: BackendContext) : AgentService {
     }
 
     /** Set the tool-iteration cap. -1 = unlimited, 0 = tools off, >0 = that many rounds. Persisted + rebuilds the loop. */
-    fun setMaxIterations(value: Int) {
+    override fun setMaxIterations(value: Int) {
         ctx.manager?.setPreference("settings.$AI_PAGE.maxIterations", value.toString())
         resetLoop()
     }
 
-    fun maxIterations(): Int = prefInt("maxIterations") ?: DEFAULT_MAX_ITERATIONS
+    override fun maxIterations(): Int = prefInt("maxIterations") ?: DEFAULT_MAX_ITERATIONS
 
     companion object {
         const val AI_PAGE = "ai"
